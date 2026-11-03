@@ -1,0 +1,13 @@
+.venv/
+
+__pycache__/
+
+*.pyc
+
+.env
+
+credentials/firebase.json
+
+.idea/
+
+.vscode/app/firebase/credentials/firebase_key.json
