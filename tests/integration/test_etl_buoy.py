@@ -26,6 +26,10 @@ from app.repository.buoy_repository import BuoyRepository
 from app.database.connection import DatabaseConnection
 
 
+from tests.integration.gate import integration_test
+
+
+@integration_test
 class TestETLBuoy(unittest.TestCase):
 
     def test_firebase_to_timescaledb(self):
@@ -123,4 +127,3 @@ class TestETLBuoy(unittest.TestCase):
         print("\n" + "=" * 70)
         print("ETL BOIA CONCLUÍDO COM SUCESSO")
         print("=" * 70)
-

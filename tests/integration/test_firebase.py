@@ -3,6 +3,10 @@ import unittest
 from app.firebase.client import FirebaseClient
 
 
+from tests.integration.gate import integration_test
+
+
+@integration_test
 class TestFirebase(unittest.TestCase):
 
     def test_connect(self):

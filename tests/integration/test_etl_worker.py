@@ -7,11 +7,16 @@ import unittest
 from app.worker.etl_worker import ETLWorker
 
 
+from tests.integration.gate import integration_test
+
+
+@integration_test
 class TestETLWorker(unittest.TestCase):
 
     def test_run_once(self):
 
         worker = ETLWorker()
+        self.addCleanup(worker.database.close)
 
         sensores, boias = worker.run_once()
 
@@ -47,9 +52,11 @@ class TestETLWorker(unittest.TestCase):
             f"erros: {boias_erros}"
         )
 
-        # Deve ter registros vindos do Firebase
-        self.assertGreater(sensores_recebidos, 0)
-        self.assertGreater(boias_recebidas, 0)
+        # Zero recebidos é válido quando o checkpoint está atualizado.
+        self.assertGreaterEqual(sensores_recebidos, 0)
+        self.assertGreaterEqual(boias_recebidas, 0)
+        self.assertEqual(sensores_erros, 0)
+        self.assertEqual(boias_erros, 0)
 
         # Todo registro recebido deve terminar em:
         # inserido, ignorado ou erro

@@ -15,6 +15,7 @@ Sensor / Buoy
 """
 
 import unittest
+from tests.integration.gate import integration_test
 
 from app.firebase.client import FirebaseClient
 from app.transformer.normalize import (
@@ -26,6 +27,7 @@ from app.models.sensor import Sensor
 from app.models.buoy import Buoy
 
 
+@integration_test
 class TestNormalizeFirebase(unittest.TestCase):
 
     def test_normalize_sensor_real(self):
@@ -171,4 +173,3 @@ class TestNormalizeFirebase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

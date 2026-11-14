@@ -17,6 +17,10 @@ from app.repository.buoy_repository import BuoyRepository
 from app.database.connection import DatabaseConnection
 
 
+from tests.integration.gate import integration_test
+
+
+@integration_test
 class TestIdempotency(unittest.TestCase):
 
     def test_sensor_idempotency(self):

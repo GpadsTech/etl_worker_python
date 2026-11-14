@@ -25,6 +25,10 @@ from app.repository.sensor_repository import SensorRepository
 from app.database.connection import DatabaseConnection
 
 
+from tests.integration.gate import integration_test
+
+
+@integration_test
 class TestETLSensor(unittest.TestCase):
 
     def test_firebase_to_timescaledb(self):
@@ -120,4 +124,3 @@ class TestETLSensor(unittest.TestCase):
         print("\n" + "=" * 70)
         print("ETL SENSOR CONCLUÍDO COM SUCESSO")
         print("=" * 70)
-

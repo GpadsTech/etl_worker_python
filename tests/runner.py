@@ -4,9 +4,9 @@ Executor de testes com resumo visual em português.
 Uso:
     python -m tests.runner              # testes offline (padrão)
     python -m tests.runner offline      # testes offline
-    python -m tests.runner integration  # repositórios contra o banco local
-    python -m tests.runner all          # descoberta completa
-    python -m tests.runner tests.test_mapper tests.test_normalize
+    RUN_INTEGRATION=1 python -m tests.runner integration  # serviços reais
+    python -m tests.runner all          # integração pulada sem autorização
+    python -m tests.runner tests.unit.test_mapper
 
 Cada teste imprime uma linha com o resultado e o tempo. No fim é
 mostrado um resumo por módulo e um total geral.
@@ -16,18 +16,6 @@ import os
 import sys
 import time
 import unittest
-
-
-OFFLINE_MODULES = (
-    "tests.test_mapper",
-    "tests.teste_timestamp",
-    "tests.test_normalize",
-)
-
-INTEGRATION_MODULES = (
-    "tests.test_sensor_repository",
-    "tests.test_buoy_repository",
-)
 
 
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
@@ -102,6 +90,7 @@ class VisualResult(unittest.TextTestResult):
     def addSkip(self, test, reason):
         super().addSkip(test, reason)
         self._record(test, "pulado")
+        self.stream.writeln(f"           Motivo: {reason}")
 
     def addExpectedFailure(self, test, err):
         super().addExpectedFailure(test, err)
@@ -127,30 +116,30 @@ def build_suite(names: list[str]) -> unittest.TestSuite:
     if not names:
         names = ["offline"]
 
-    if names == ["all"]:
-        return loader.discover(
-            "tests",
-            pattern="test*.py",
-            top_level_dir=".",
-        )
-
-    modules: list[str] = []
+    suites = []
 
     for name in names:
 
         if name == "offline":
-            modules.extend(OFFLINE_MODULES)
+            directories = ["tests/unit"]
 
         elif name == "integration":
-            modules.extend(INTEGRATION_MODULES)
+            directories = ["tests/integration"]
 
+        elif name == "all":
+            directories = ["tests/unit", "tests/integration"]
         else:
-            modules.append(name)
+            if name.startswith(("tests.legacy", "tests.test_bootstrap")):
+                raise ValueError("Bootstrap legado está fora da suíte ativa.")
+            suites.append(loader.loadTestsFromName(name))
+            continue
 
-    return unittest.TestSuite(
-        loader.loadTestsFromName(module)
-        for module in modules
-    )
+        for directory in directories:
+            suites.append(loader.discover(
+                directory, pattern="test*.py", top_level_dir=".",
+            ))
+
+    return unittest.TestSuite(suites)
 
 
 def print_header(total: int) -> None:
@@ -233,9 +222,16 @@ def print_summary(result: VisualResult, elapsed: float) -> None:
     )
     print(f"  Duração total: {paint(f'{elapsed:.3f} s', CYAN)}")
 
-    if problems == 0:
+    if result.wasSuccessful() and result.testsRun > len(result.skipped):
         print()
-        print(paint("  ✔ TODOS OS TESTES PASSARAM", GREEN + BOLD))
+        message = (
+            "  ✔ TESTES EXECUTADOS PASSARAM (há testes pulados)"
+            if result.skipped else "  ✔ TODOS OS TESTES PASSARAM"
+        )
+        print(paint(message, GREEN + BOLD))
+    elif result.wasSuccessful():
+        print()
+        print(paint("  — NENHUM TESTE EXECUTADO (todos pulados ou suíte vazia)", YELLOW))
     else:
         print()
         print(

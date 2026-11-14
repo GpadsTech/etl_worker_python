@@ -10,6 +10,10 @@ from app.repository.sensor_repository import SensorRepository
 from app.database.connection import DatabaseConnection
 
 
+from tests.integration.gate import integration_test
+
+
+@integration_test
 class TestSensorRepository(unittest.TestCase):
 
     def test_insert_sensor_without_duplication(self):
