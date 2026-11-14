@@ -1,6 +1,6 @@
 import unittest
 
-from app.firebase.readers.bootstrap import BootstrapReader
+from legacy.bootstrap import BootstrapReader
 
 
 class TestBootstrap(unittest.TestCase):
