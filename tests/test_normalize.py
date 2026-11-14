@@ -214,6 +214,211 @@ class TestNormalize(unittest.TestCase):
         self.assertIsNone(buoy.sensor_uv_v)
         self.assertEqual(buoy.turbidez_v, 3.08)
 
+    def test_normalize_sensor_converts_numeric_strings(self):
+
+        firebase = {
+
+            "ar": "7.35",
+            "chuva": "0",
+            "gas": "3.87",
+            "hora": "2026-04-23 14:48:35",
+            "luz": "701.67",
+            "pressao": "1011.75",
+            "rpm": "0",
+            "temperatura": "27.69",
+            "umidade": "52.15",
+            "vento": "0",
+            "volt": "0.87"
+
+        }
+
+        sensor = normalize_sensor(
+
+            firebase_id="-strings",
+
+            sensor_id="EST002",
+
+            data=firebase,
+
+        )
+
+        for field in (
+            "ar",
+            "chuva",
+            "gas",
+            "luz",
+            "pressao",
+            "rpm",
+            "temperatura",
+            "umidade",
+            "vento",
+            "volt",
+        ):
+            self.assertIsInstance(getattr(sensor, field), float)
+
+        self.assertEqual(sensor.ar, 7.35)
+        self.assertEqual(sensor.chuva, 0.0)
+        self.assertEqual(sensor.temperatura, 27.69)
+        self.assertEqual(sensor.umidade, 52.15)
+        self.assertEqual(sensor.volt, 0.87)
+
+    def test_normalize_sensor_empty_and_missing_values_become_none(self):
+
+        firebase = {
+
+            "hora": "2026-04-23 14:48:35",
+            "temperatura": "",
+            "umidade": "   ",
+            "pressao": None
+
+        }
+
+        sensor = normalize_sensor(
+
+            firebase_id="-empty",
+
+            sensor_id="EST002",
+
+            data=firebase,
+
+        )
+
+        self.assertIsNone(sensor.temperatura)
+        self.assertIsNone(sensor.umidade)
+        self.assertIsNone(sensor.pressao)
+        self.assertIsNone(sensor.ar)
+
+    def test_normalize_sensor_rejects_invalid_number(self):
+
+        with self.assertRaises(ValueError) as context:
+
+            normalize_sensor(
+
+                firebase_id="-invalid",
+
+                sensor_id="EST002",
+
+                data={
+                    "hora": "2026-04-23 14:48:35",
+                    "temperatura": "28,5"
+                },
+
+            )
+
+        self.assertIn("temperatura", str(context.exception))
+
+    def test_normalize_sensor_rejects_non_finite_values(self):
+
+        for raw in ("nan", "inf", "-inf"):
+
+            with self.assertRaises(ValueError):
+
+                normalize_sensor(
+
+                    firebase_id="-non-finite",
+
+                    sensor_id="EST002",
+
+                    data={
+                        "hora": "2026-04-23 14:48:35",
+                        "pressao": raw
+                    },
+
+                )
+
+    def test_normalize_sensor_rejects_boolean(self):
+
+        with self.assertRaises(ValueError) as context:
+
+            normalize_sensor(
+
+                firebase_id="-boolean",
+
+                sensor_id="EST002",
+
+                data={
+                    "hora": "2026-04-23 14:48:35",
+                    "luz": True
+                },
+
+            )
+
+        self.assertIn("luz", str(context.exception))
+
+    def test_normalize_sensor_rejects_negative_values(self):
+
+        for field in ("umidade", "rpm", "pressao"):
+
+            with self.assertRaises(ValueError):
+
+                normalize_sensor(
+
+                    firebase_id="-negative",
+
+                    sensor_id="EST002",
+
+                    data={
+                        "hora": "2026-04-23 14:48:35",
+                        field: -1
+                    },
+
+                )
+
+    def test_normalize_sensor_rejects_humidity_above_100(self):
+
+        with self.assertRaises(ValueError) as context:
+
+            normalize_sensor(
+
+                firebase_id="-humidity",
+
+                sensor_id="EST002",
+
+                data={
+                    "hora": "2026-04-23 14:48:35",
+                    "umidade": 100.1
+                },
+
+            )
+
+        self.assertIn("umidade", str(context.exception))
+
+    def test_normalize_sensor_allows_negative_temperature(self):
+
+        sensor = normalize_sensor(
+
+            firebase_id="-cold",
+
+            sensor_id="EST002",
+
+            data={
+                "hora": "2026-04-23 14:48:35",
+                "temperatura": -5.2
+            },
+
+        )
+
+        self.assertEqual(sensor.temperatura, -5.2)
+
+    def test_normalize_buoy_rejects_invalid_number(self):
+
+        with self.assertRaises(ValueError) as context:
+
+            normalize_buoy(
+
+                firebase_id="-invalid",
+
+                buoy_id="BOIA001",
+
+                data={
+                    "hora": "2026-06-01 11:04:27",
+                    "ph": "22,84"
+                },
+
+            )
+
+        self.assertIn("ph", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
