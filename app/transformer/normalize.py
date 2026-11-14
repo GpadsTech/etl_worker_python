@@ -77,8 +77,7 @@ def normalize_buoy(
             normalized[FieldMapper.BUOY[key]] = value
 
     timestamp = buoy_timestamp(
-        normalized.pop("data"),
-        normalized.pop("hora"),
+        normalized.pop("timestamp"),
     )
 
     normalized["adc"] = _to_float(

@@ -20,10 +20,10 @@ class TestNormalize(unittest.TestCase):
 
         firebase = {
 
-            "Temperatura": 24.21,
-            "Umidade": 78.26,
-            "Pressao": 1009.37,
-            "Hora": "2026-04-23 14:48:35"
+            "temperatura": 24.21,
+            "umidade": 78.26,
+            "pressao": 1009.37,
+            "hora": "2026-04-23 14:48:35"
 
         }
 
@@ -51,18 +51,46 @@ class TestNormalize(unittest.TestCase):
 
         self.assertIsInstance(sensor.timestamp, datetime)
 
+        self.assertEqual(
+            sensor.timestamp,
+            datetime(2026, 4, 23, 14, 48, 35)
+        )
+
+    def test_normalize_sensor_discards_metadata(self):
+
+        firebase = {
+
+            "temperatura": 24.21,
+            "hora": "2026-04-23 14:48:35",
+            "endereco_ip": "192.168.0.10",
+            "identificador": 7
+
+        }
+
+        sensor = normalize_sensor(
+
+            firebase_id="-abc123",
+
+            sensor_id="EST001",
+
+            data=firebase,
+
+        )
+
+        self.assertFalse(hasattr(sensor, "endereco_ip"))
+
+        self.assertFalse(hasattr(sensor, "identificador"))
 
     def test_normalize_buoy(self):
 
         firebase = {
 
-            "ADC": "24",
-            "Data": "22/07/2026",
-            "Hora": "18:27:46",
-            "Ph": "7.20",
-            "Sensor UV(V)": "2.54",
-            "Tensão(V)": "0.81",
-            "Turbidez(V)": "3.08"
+            "adc": "24",
+            "hora": "2026-07-22 18:27:46",
+            "ph": "7.20",
+            "sensor_uv_v": "2.54",
+            "tensao_v": "0.81",
+            "turbidez_v": "3.08"
 
         }
 
@@ -89,23 +117,51 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(buoy.sensor_uv_v, 2.54)
 
         self.assertEqual(buoy.tensao_v, 0.81)
-        
+
         self.assertEqual(buoy.turbidez_v, 3.08)
 
         self.assertIsInstance(buoy.timestamp, datetime)
 
+        self.assertEqual(
+            buoy.timestamp,
+            datetime(2026, 7, 22, 18, 27, 46)
+        )
+
+    def test_normalize_buoy_without_adc(self):
+
+        firebase = {
+
+            "hora": "2026-06-01 11:04:27",
+            "ph": 22.84,
+            "sensor_uv_v": 3.3,
+            "turbidez_v": 3.3
+
+        }
+
+        buoy = normalize_buoy(
+
+            firebase_id="-sem-adc",
+
+            buoy_id="BOIA002",
+
+            data=firebase,
+
+        )
+
+        self.assertIsNone(buoy.adc)
+
+        self.assertIsNone(buoy.tensao_v)
 
     def test_normalize_buoy_numeric_conversion(self):
 
         firebase = {
 
-            "ADC": "24",
-            "Data": "22/07/2026",
-            "Hora": "18:27:46",
-            "Ph": "7.20",
-            "Sensor UV(V)": "2.54",
-            "Tensão(V)": "0.81",
-            "Turbidez(V)": "3.08"
+            "adc": "24",
+            "hora": "2026-07-22 18:27:46",
+            "ph": "7.20",
+            "sensor_uv_v": "2.54",
+            "tensao_v": "0.81",
+            "turbidez_v": "3.08"
 
         }
 
@@ -129,6 +185,33 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(buoy.ph, 7.20)
         self.assertEqual(buoy.sensor_uv_v, 2.54)
         self.assertEqual(buoy.tensao_v, 0.81)
+        self.assertEqual(buoy.turbidez_v, 3.08)
+
+    def test_normalize_buoy_empty_numeric_values(self):
+
+        firebase = {
+
+            "adc": "",
+            "hora": "2026-07-22 18:27:46",
+            "ph": " ",
+            "sensor_uv_v": None,
+            "turbidez_v": "3.08"
+
+        }
+
+        buoy = normalize_buoy(
+
+            firebase_id="-empty-values",
+
+            buoy_id="BOIA001",
+
+            data=firebase,
+
+        )
+
+        self.assertIsNone(buoy.adc)
+        self.assertIsNone(buoy.ph)
+        self.assertIsNone(buoy.sensor_uv_v)
         self.assertEqual(buoy.turbidez_v, 3.08)
 
 

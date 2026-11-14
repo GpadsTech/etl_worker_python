@@ -1,23 +1,31 @@
 """
-Converte datas e horas para objetos datetime
+Converte datas e horas para objetos datetime.
+
+Sensores e boias usam o mesmo formato de data/hora no Firebase
+atual: ``AAAA-MM-DD HH:MM:SS``. As duas funções são mantidas
+separadas para preservar a intenção de domínio de cada origem.
 """
 
 from datetime import datetime
 
 
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
 def sensor_timestamp(value: str) -> datetime:
     """
-    Converte o campo Hora do sensor para datetime.
+    Converte o campo ``hora`` do sensor para datetime.
     """
 
-    return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    return datetime.strptime(value, TIMESTAMP_FORMAT)
 
 
-def buoy_timestamp(data: str, hora: str) -> datetime:
+def buoy_timestamp(value: str) -> datetime:
     """
-    Converte Data + Hora da boia para datetime.
+    Converte o campo ``hora`` da boia para datetime.
+
+    A boia não envia mais os campos separados ``Data`` e ``Hora``;
+    o registro traz um único ``hora`` já completo.
     """
 
-    value = f"{data} {hora}"
-
-    return datetime.strptime(value, "%d/%m/%Y %H:%M:%S")
+    return datetime.strptime(value, TIMESTAMP_FORMAT)

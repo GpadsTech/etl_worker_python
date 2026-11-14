@@ -9,39 +9,55 @@ from app.transformer.mapper import FieldMapper
 
 class TestFieldMapper(unittest.TestCase):
 
-    def test_sensor_mapper(self):
+    def test_sensor_mapper_uses_lowercase_keys(self):
 
         self.assertEqual(
-            FieldMapper.SENSOR["Temperatura"],
+            FieldMapper.SENSOR["temperatura"],
             "temperatura"
         )
 
         self.assertEqual(
-            FieldMapper.SENSOR["Hora"],
+            FieldMapper.SENSOR["hora"],
             "timestamp"
         )
 
         self.assertEqual(
-            FieldMapper.SENSOR["Volt"],
+            FieldMapper.SENSOR["volt"],
             "volt"
         )
 
-    def test_buoy_mapper(self):
+        self.assertEqual(
+            FieldMapper.SENSOR["chuva"],
+            "chuva"
+        )
+
+    def test_buoy_mapper_uses_lowercase_keys(self):
 
         self.assertEqual(
-            FieldMapper.BUOY["ADC"],
+            FieldMapper.BUOY["adc"],
             "adc"
         )
 
         self.assertEqual(
-            FieldMapper.BUOY["Sensor UV(V)"],
+            FieldMapper.BUOY["sensor_uv_v"],
             "sensor_uv_v"
         )
 
         self.assertEqual(
-            FieldMapper.BUOY["Tensão(V)"],
+            FieldMapper.BUOY["tensao_v"],
             "tensao_v"
         )
+
+        self.assertEqual(
+            FieldMapper.BUOY["hora"],
+            "timestamp"
+        )
+
+    def test_legacy_capitalized_keys_are_not_mapped(self):
+
+        for key in ("Temperatura", "Hora", "Data", "ADC"):
+            self.assertNotIn(key, FieldMapper.SENSOR)
+            self.assertNotIn(key, FieldMapper.BUOY)
 
 
 if __name__ == "__main__":
