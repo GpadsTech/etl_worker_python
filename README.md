@@ -29,6 +29,10 @@ Dispositivos de campo, como estações de sensores e boias, produzem leituras co
 
 O projeto atua como uma **camada de ingestão de dados**. Ele não é, por si só, uma interface web ou uma API HTTP.
 
+O [diagnóstico técnico](docs/diagnostico.md) registra o caminho executado, componentes ativos e legados, testes offline e pendências operacionais com responsáveis. Use [`.env.example`](.env.example) como configuração inicial sem valores reais.
+
+A [ADR de hospedagem](docs/adr-hospedagem.md) registra a proposta de Render Worker, condições para Cron, rede/TLS, custos e alternativa de execução.
+
 ## 🏗️ Arquitetura e fluxo
 
 ```mermaid
@@ -241,7 +245,7 @@ Crie um arquivo `.env` na raiz do projeto:
 
 ```dotenv
 FIREBASE_DATABASE_URL=https://SEU-PROJETO-default-rtdb.firebaseio.com
-FIREBASE_CREDENTIALS=app/firebase/credentials/firebase_key.json
+FIREBASE_CREDENTIALS=firebase/credentials/firebase_key.json
 
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
@@ -255,7 +259,7 @@ ETL_INTERVAL_SECONDS=60
 | Variável | Descrição |
 | --- | --- |
 | `FIREBASE_DATABASE_URL` | URL do Realtime Database do projeto Firebase |
-| `FIREBASE_CREDENTIALS` | Caminho local do JSON da conta de serviço, relativo à raiz do projeto |
+| `FIREBASE_CREDENTIALS` | Caminho local do JSON da conta de serviço, absoluto ou relativo a `app/` |
 | `POSTGRES_HOST` | Host do servidor PostgreSQL |
 | `POSTGRES_PORT` | Porta do PostgreSQL; padrão `5432` |
 | `POSTGRES_DB` | Nome do banco de dados |
@@ -273,7 +277,7 @@ __pycache__/
 app/firebase/credentials/*.json
 ```
 
-> **Observação de segurança do repositório em 03/11/2026:** o `.gitignore` examinado possui uma entrada concatenada (`.vscode/app/firebase/credentials/firebase_key.json`) que **não protege corretamente** o caminho do JSON. Corrija essa entrada antes de adicionar arquivos ao Git. Se alguma chave privada já tiver sido exposta, revogue-a e emita uma nova.
+> O `.gitignore` foi revisado para excluir credenciais, configurações privadas, ZIPs e ambientes locais. Isso não remove arquivos já rastreados nem saneia o histórico. A chave mencionada no anexo depende de confirmação do mantenedor; se ativa, deve ser revogada/substituída antes da implantação. Não publique o segredo.
 
 ### 6. Inicialize o TimescaleDB
 

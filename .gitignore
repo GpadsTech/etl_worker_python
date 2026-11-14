@@ -1,13 +1,25 @@
+# Ambientes e caches
 .venv/
-
+.venv*/
+venv/
+env/
 __pycache__/
-
-*.pyc
-
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+# Configuração privada
 .env
-
-credentials/firebase.json
-
+.env.*
+!.env.example
+# Credenciais, chaves e anexos locais
+credentials/
+**/credentials/
+*firebase*.json
+*service-account*.json
+*service_account*.json
+*.pem
+*.key
+*.zip
 .idea/
-
-.vscode/app/firebase/credentials/firebase_key.json
+.vscode/
