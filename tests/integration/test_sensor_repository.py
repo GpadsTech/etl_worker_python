@@ -7,14 +7,14 @@ from datetime import datetime, timezone
 
 from app.models.sensor import Sensor
 from app.repository.sensor_repository import SensorRepository
-from app.database.connection import DatabaseConnection
+from tests.integration.temporary_database import TemporaryDatabaseTestCase
 
 
 from tests.integration.gate import integration_test
 
 
 @integration_test
-class TestSensorRepository(unittest.TestCase):
+class TestSensorRepository(TemporaryDatabaseTestCase):
 
     def test_insert_sensor_without_duplication(self):
 
@@ -37,7 +37,7 @@ class TestSensorRepository(unittest.TestCase):
             volt=0.87,
         )
 
-        db = DatabaseConnection()
+        db = self.database
         repository = SensorRepository(db)
 
         # Primeira inserção

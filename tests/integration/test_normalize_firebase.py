@@ -16,6 +16,7 @@ Sensor / Buoy
 
 import unittest
 from tests.integration.gate import integration_test
+from tests.integration.firebase_samples import buscar_leitura_real
 
 from app.firebase.client import FirebaseClient
 from app.transformer.normalize import (
@@ -34,24 +35,11 @@ class TestNormalizeFirebase(unittest.TestCase):
 
         client = FirebaseClient()
 
-        # Conecta ao Firebase
-        client.connect()
-
-        # Obtém os dados do sensor EST001
-        ref = client.sensor_data("EST001")
-        data = ref.get()
-
-        self.assertIsInstance(data, dict)
-        self.assertGreater(len(data), 0)
-
-        # Pega o último registro
-        firebase_id, firebase_data = list(data.items())[-1]
+        sensor_id, firebase_id, firebase_data = buscar_leitura_real(client, "sensores")
 
         print("\n" + "=" * 70)
         print("NORMALIZAÇÃO - SENSOR REAL")
         print("=" * 70)
-
-        sensor_id = "EST001"
 
         print(f"Sensor ID: {sensor_id}")
         print(f"Firebase ID: {firebase_id}")
@@ -99,30 +87,19 @@ class TestNormalizeFirebase(unittest.TestCase):
 
         client = FirebaseClient()
 
-        # Conecta ao Firebase
-        client.connect()
-
-        # Obtém os dados da boia BOIA001
-        ref = client.buoy_data("BOIA001")
-        data = ref.get()
-
-        self.assertIsInstance(data, dict)
-        self.assertGreater(len(data), 0)
-
-        # Pega o último registro
-        firebase_id, firebase_data = list(data.items())[-1]
+        buoy_id, firebase_id, firebase_data = buscar_leitura_real(client, "boias")
 
         print("\n" + "=" * 70)
         print("NORMALIZAÇÃO - BOIA REAL")
         print("=" * 70)
 
-        print(f"Boia ID: {'BOIA001'}")
+        print(f"Boia ID: {buoy_id}")
         print(f"Firebase ID: {firebase_id}")
 
         # Normaliza o registro
         buoy = normalize_buoy(
             firebase_id=firebase_id,
-            buoy_id="BOIA001",
+            buoy_id=buoy_id,
             data=firebase_data,
         )
 

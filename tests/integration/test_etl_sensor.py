@@ -22,14 +22,15 @@ from app.firebase.client import FirebaseClient
 from app.transformer.normalize import normalize_sensor
 from app.models.sensor import Sensor
 from app.repository.sensor_repository import SensorRepository
-from app.database.connection import DatabaseConnection
+from tests.integration.temporary_database import TemporaryDatabaseTestCase
 
 
 from tests.integration.gate import integration_test
+from tests.integration.firebase_samples import buscar_leitura_real
 
 
 @integration_test
-class TestETLSensor(unittest.TestCase):
+class TestETLSensor(TemporaryDatabaseTestCase):
 
     def test_firebase_to_timescaledb(self):
 
@@ -38,23 +39,14 @@ class TestETLSensor(unittest.TestCase):
         # =====================================================
 
         client = FirebaseClient()
-        client.connect()
-
-        ref = client.sensor_data("EST001")
-        data = ref.get()
-
-        self.assertIsInstance(data, dict)
-        self.assertGreater(len(data), 0)
-
-        # Pega o último registro disponível
-        firebase_id, firebase_data = list(data.items())[-1]
+        sensor_id, firebase_id, firebase_data = buscar_leitura_real(client, "sensores")
 
         print("\n" + "=" * 70)
         print("TESTE DE INTEGRAÇÃO - ETL SENSOR")
         print("=" * 70)
 
         print("\n[1] Firebase")
-        print(f"Sensor ID: EST001")
+        print(f"Sensor ID: {sensor_id}")
         print(f"Firebase ID: {firebase_id}")
 
         # =====================================================
@@ -63,7 +55,7 @@ class TestETLSensor(unittest.TestCase):
 
         sensor = normalize_sensor(
             firebase_id=firebase_id,
-            sensor_id="EST001",
+            sensor_id=sensor_id,
             data=firebase_data,
         )
 
@@ -77,7 +69,7 @@ class TestETLSensor(unittest.TestCase):
         # 3. TIMESCALEDB
         # =====================================================
 
-        db = DatabaseConnection()
+        db = self.database
         repository = SensorRepository(db)
 
         repository.insert(sensor)

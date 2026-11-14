@@ -8,14 +8,14 @@ from datetime import datetime, timezone
 
 from app.models.buoy import Buoy
 from app.repository.buoy_repository import BuoyRepository
-from app.database.connection import DatabaseConnection
+from tests.integration.temporary_database import TemporaryDatabaseTestCase
 
 
 from tests.integration.gate import integration_test
 
 
 @integration_test
-class TestBuoyRepository(unittest.TestCase):
+class TestBuoyRepository(TemporaryDatabaseTestCase):
 
     def test_insert_buoy_without_duplication(self):
 
@@ -33,7 +33,7 @@ class TestBuoyRepository(unittest.TestCase):
             turbidez_v=3.08,
         )
 
-        db = DatabaseConnection()
+        db = self.database
         repository = BuoyRepository(db)
 
         # Primeira inserção

@@ -3,7 +3,7 @@
 from datetime import datetime
 import unittest
 
-from app.database.connection import DatabaseConnection
+from tests.integration.temporary_database import TemporaryDatabaseTestCase
 from app.models.sensor import Sensor
 from app.repository.base import BATCH_SIZE
 from app.repository.sensor_repository import SensorRepository
@@ -11,28 +11,9 @@ from tests.integration.gate import integration_test
 
 
 @integration_test
-class TestBatchTransaction(unittest.TestCase):
+class TestBatchTransaction(TemporaryDatabaseTestCase):
     def setUp(self):
-        self.database = DatabaseConnection()
-        self.addCleanup(self.database.close)
-        connection = self.database.connect()
-        # A tabela temporária oculta public.sensor_data só nesta conexão.
-        # Commit inicial garante que o rollback do teste não apague a tabela.
-        with connection.cursor() as cursor:
-            columns = ", ".join(
-                f"{name} DOUBLE PRECISION"
-                for name in SensorRepository.columns[3:]
-            )
-            cursor.execute(f"""
-                CREATE TEMP TABLE sensor_data (
-                    firebase_id TEXT NOT NULL,
-                    sensor_id TEXT NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    {columns},
-                    PRIMARY KEY (firebase_id, timestamp)
-                );
-            """)
-        self.database.commit()
+        super().setUp()
         self.repository = SensorRepository(self.database)
 
     def count(self):

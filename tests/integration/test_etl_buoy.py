@@ -23,14 +23,15 @@ from app.firebase.client import FirebaseClient
 from app.transformer.normalize import normalize_buoy
 from app.models.buoy import Buoy
 from app.repository.buoy_repository import BuoyRepository
-from app.database.connection import DatabaseConnection
+from tests.integration.temporary_database import TemporaryDatabaseTestCase
 
 
 from tests.integration.gate import integration_test
+from tests.integration.firebase_samples import buscar_leitura_real
 
 
 @integration_test
-class TestETLBuoy(unittest.TestCase):
+class TestETLBuoy(TemporaryDatabaseTestCase):
 
     def test_firebase_to_timescaledb(self):
 
@@ -39,23 +40,14 @@ class TestETLBuoy(unittest.TestCase):
         # =====================================================
 
         client = FirebaseClient()
-        client.connect()
-
-        ref = client.buoy_data("BOIA001")
-        data = ref.get()
-
-        self.assertIsInstance(data, dict)
-        self.assertGreater(len(data), 0)
-
-        # Pega o último registro disponível
-        firebase_id, firebase_data = list(data.items())[-1]
+        buoy_id, firebase_id, firebase_data = buscar_leitura_real(client, "boias")
 
         print("\n" + "=" * 70)
         print("TESTE DE INTEGRAÇÃO - ETL BOIA")
         print("=" * 70)
 
         print("\n[1] Firebase")
-        print("Boia ID: BOIA001")
+        print(f"Boia ID: {buoy_id}")
         print(f"Firebase ID: {firebase_id}")
 
         # =====================================================
@@ -64,7 +56,7 @@ class TestETLBuoy(unittest.TestCase):
 
         buoy = normalize_buoy(
             firebase_id=firebase_id,
-            buoy_id="BOIA001",
+            buoy_id=buoy_id,
             data=firebase_data,
         )
 
@@ -78,7 +70,7 @@ class TestETLBuoy(unittest.TestCase):
         # 3. TIMESCALEDB
         # =====================================================
 
-        db = DatabaseConnection()
+        db = self.database
         repository = BuoyRepository(db)
 
         repository.insert(buoy)

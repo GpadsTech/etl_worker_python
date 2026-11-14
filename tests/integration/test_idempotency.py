@@ -14,14 +14,15 @@ from app.transformer.normalize import (
 )
 from app.repository.sensor_repository import SensorRepository
 from app.repository.buoy_repository import BuoyRepository
-from app.database.connection import DatabaseConnection
+from tests.integration.temporary_database import TemporaryDatabaseTestCase
 
 
 from tests.integration.gate import integration_test
+from tests.integration.firebase_samples import buscar_leitura_real
 
 
 @integration_test
-class TestIdempotency(unittest.TestCase):
+class TestIdempotency(TemporaryDatabaseTestCase):
 
     def test_sensor_idempotency(self):
 
@@ -30,15 +31,7 @@ class TestIdempotency(unittest.TestCase):
         # =====================================================
 
         client = FirebaseClient()
-        client.connect()
-
-        ref = client.sensor_data("EST001")
-        data = ref.get()
-
-        self.assertIsInstance(data, dict)
-        self.assertGreater(len(data), 0)
-
-        firebase_id, firebase_data = list(data.items())[-1]
+        sensor_id, firebase_id, firebase_data = buscar_leitura_real(client, "sensores")
 
         # =====================================================
         # 2. NORMALIZAR
@@ -46,7 +39,7 @@ class TestIdempotency(unittest.TestCase):
 
         sensor = normalize_sensor(
             firebase_id=firebase_id,
-            sensor_id="EST001",
+            sensor_id=sensor_id,
             data=firebase_data,
         )
 
@@ -54,7 +47,7 @@ class TestIdempotency(unittest.TestCase):
         # 3. INSERIR DUAS VEZES
         # =====================================================
 
-        db = DatabaseConnection()
+        db = self.database
         repository = SensorRepository(db)
 
         repository.insert(sensor)
@@ -89,6 +82,7 @@ class TestIdempotency(unittest.TestCase):
         print("IDEMPOTÊNCIA - SENSOR")
         print("=" * 70)
 
+        print(f"Sensor ID: {sensor_id}")
         print(f"Firebase ID: {sensor.firebase_id}")
         print(f"Timestamp: {sensor.timestamp}")
         print(f"Quantidade encontrada: {quantidade}")
@@ -105,15 +99,7 @@ class TestIdempotency(unittest.TestCase):
         # =====================================================
 
         client = FirebaseClient()
-        client.connect()
-
-        ref = client.buoy_data("BOIA001")
-        data = ref.get()
-
-        self.assertIsInstance(data, dict)
-        self.assertGreater(len(data), 0)
-
-        firebase_id, firebase_data = list(data.items())[-1]
+        buoy_id, firebase_id, firebase_data = buscar_leitura_real(client, "boias")
 
         # =====================================================
         # 2. NORMALIZAR
@@ -121,7 +107,7 @@ class TestIdempotency(unittest.TestCase):
 
         buoy = normalize_buoy(
             firebase_id=firebase_id,
-            buoy_id="BOIA001",
+            buoy_id=buoy_id,
             data=firebase_data,
         )
 
@@ -129,7 +115,7 @@ class TestIdempotency(unittest.TestCase):
         # 3. INSERIR DUAS VEZES
         # =====================================================
 
-        db = DatabaseConnection()
+        db = self.database
         repository = BuoyRepository(db)
 
         repository.insert(buoy)
@@ -164,6 +150,7 @@ class TestIdempotency(unittest.TestCase):
         print("IDEMPOTÊNCIA - BOIA")
         print("=" * 70)
 
+        print(f"Boia ID: {buoy_id}")
         print(f"Firebase ID: {buoy.firebase_id}")
         print(f"Timestamp: {buoy.timestamp}")
         print(f"Quantidade encontrada: {quantidade}")

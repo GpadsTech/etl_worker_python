@@ -3,20 +3,23 @@ Teste de integração do ETLWorker.
 """
 
 import unittest
+from unittest.mock import patch
 
 from app.worker.etl_worker import ETLWorker
+from tests.integration.temporary_database import TemporaryDatabaseTestCase
 
 
 from tests.integration.gate import integration_test
 
 
 @integration_test
-class TestETLWorker(unittest.TestCase):
+class TestETLWorker(TemporaryDatabaseTestCase):
 
     def test_run_once(self):
 
-        worker = ETLWorker()
-        self.addCleanup(worker.database.close)
+        # Todos os repositórios, inclusive checkpoints, usam a mesma sessão TEMP.
+        with patch("app.worker.etl_worker.DatabaseConnection", return_value=self.database):
+            worker = ETLWorker()
 
         sensores, boias = worker.run_once()
 
