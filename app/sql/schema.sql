@@ -68,3 +68,19 @@ ON buoy_data(buoy_id);
 
 CREATE INDEX IF NOT EXISTS idx_buoy_time
 ON buoy_data(buoy_id, timestamp DESC);
+
+-- Checkpoint de leitura incremental por equipamento.
+-- Guarda a última chave do Firebase já processada (commitada).
+CREATE TABLE IF NOT EXISTS etl_checkpoint (
+
+    source TEXT NOT NULL,
+
+    device_id TEXT NOT NULL,
+
+    last_key TEXT NOT NULL,
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    PRIMARY KEY (source, device_id)
+
+);
