@@ -29,9 +29,9 @@ Dispositivos de campo, como estações de sensores e boias, produzem leituras co
 
 O projeto atua como uma **camada de ingestão de dados**. Ele não é, por si só, uma interface web ou uma API HTTP.
 
-O [diagnóstico técnico](docs/diagnostico.md) registra o caminho executado, componentes ativos e legados, testes offline e pendências operacionais com responsáveis. Use [`.env.example`](.env.example) como configuração inicial sem valores reais.
+O [diagnóstico técnico](docs/diagnostico.md) registra análises anteriores do projeto; algumas descrições antecedem a implementação incremental. Para configurar o ambiente, use o exemplo de variáveis neste README, sem valores reais.
 
-A [ADR de hospedagem](docs/adr-hospedagem.md) registra a proposta de Render Worker, condições para Cron, rede/TLS, custos e alternativa de execução.
+O [plano de preparação para produção](docs/preparacao-producao.md) documenta os ajustes pendentes, critérios de validação e a arquitetura de deploy proposta. A hospedagem ainda não está implantada por este repositório.
 
 ## 🏗️ Arquitetura e fluxo
 
@@ -55,16 +55,16 @@ Ao executar `python -m app.main`, o serviço:
 
 1. Inicializa o logger e lê a configuração do arquivo `.env`.
 2. Cria um `ETLWorker` com clientes e repositórios de persistência.
-3. Consulta os registros de sensores em `/sensores`.
-4. Para cada equipamento, percorre os registros localizados no nó `dados`.
-5. Normaliza e tenta inserir cada leitura no banco, contando inserções, duplicatas e erros.
+3. Lista os equipamentos de `/sensores` com uma consulta rasa.
+4. Para cada equipamento, consulta `etl_checkpoint` e busca as chaves posteriores à última processada no nó `dados`. A consulta usa `start_at`, inclusivo, e descarta a leitura de fronteira.
+5. Normaliza as leituras e grava os objetos em lote, em páginas SQL de 500 registros e uma transação por chamada. Após o commit dos dados, grava o checkpoint em outra transação.
 6. Repete o processamento para `/boias`.
 7. Registra as estatísticas do ciclo no terminal.
 8. Aguarda o intervalo configurado e inicia uma nova consulta.
 
-**Importante:** a implementação principal utiliza *polling* (consultas periódicas), com intervalo padrão de **60 segundos**. O arquivo `app/firebase/readers/listener.py` contém uma classe preparatória, mas o listener em tempo real **ainda não está implementado**.
+**Importante:** a implementação principal utiliza *polling* (consultas periódicas), com espera padrão de **60 segundos após o término de cada ciclo**; não é uma agenda fixa a cada minuto. Sem checkpoint, a primeira consulta pode carregar todo o histórico de um equipamento. O arquivo `app/firebase/readers/listener.py` contém uma classe preparatória, mas o listener em tempo real **ainda não está implementado**.
 
-Uma falha no processamento de uma leitura é registrada e não impede, por si só, que as demais leituras daquele grupo continuem sendo processadas. Exceções mais amplas durante um ciclo são registradas em `main.py`, que tenta executar o ciclo seguinte após o intervalo.
+Falhas de normalização são registradas sem impedir as demais leituras, mas o checkpoint pode avançar além do registro inválido, que não será relido automaticamente. Uma falha na gravação do lote provoca rollback e impede o avanço daquele checkpoint. Exceções mais amplas durante um ciclo são registradas em `main.py`, que tenta executar o ciclo seguinte após o intervalo.
 
 ## 🧰 Tecnologias
 
@@ -96,17 +96,18 @@ etl_worker_python/
 │   │   ├── client.py                  # Firebase Admin e referências RTDB
 │   │   ├── paths.py                   # Caminhos dos nós no Firebase
 │   │   └── readers/
-│   │       ├── bootstrap.py           # Rotina auxiliar de importação
 │   │       └── listener.py            # Listener ainda não implementado
 │   ├── models/
 │   │   ├── sensor.py                  # Modelo Sensor
 │   │   └── buoy.py                    # Modelo Buoy
 │   ├── repository/
+│   │   ├── base.py                    # Inserção em lote e transações
+│   │   ├── checkpoint_repository.py   # Progresso por origem e equipamento
 │   │   ├── sensor_repository.py       # INSERT de sensores (fluxo principal)
 │   │   └── buoy_repository.py         # INSERT de boias (fluxo principal)
 │   ├── sql/
 │   │   ├── init_timescale.sql         # Ativação da extensão TimescaleDB
-│   │   └── schema.sql                 # Tabelas, hypertables e índices
+│   │   └── schema.sql                 # Tabelas, hypertables, índices e checkpoint
 │   ├── transformer/
 │   │   ├── mapper.py                  # Mapeamento de nomes dos campos
 │   │   ├── normalize.py               # Normalização das leituras
@@ -116,7 +117,8 @@ etl_worker_python/
 │   ├── worker/
 │   │   └── etl_worker.py              # Orquestração da ingestão
 │   └── main.py                        # Entrada e loop contínuo
-├── tests/                              # Testes do projeto
+├── docs/                               # Análises e preparação para produção
+├── tests/                              # Testes unitários, integração e legado
 ├── .gitignore
 ├── README.md
 └── requirements.txt
@@ -133,18 +135,17 @@ sensores/
   EST001/
     dados/
       <firebase_id>/
-        Hora: "2026-11-03 14:25:00"
-        Temperatura: 28.5
-        Umidade: 71
+        hora: "2026-11-03 14:25:00"
+        temperatura: 28.5
+        umidade: 71
         ...
 
 boias/
   BOIA001/
     dados/
       <firebase_id>/
-        Data: "03/11/2026"
-        Hora: "14:25:00"
-        Ph: "7.2"
+        hora: "2026-11-03 14:25:00"
+        ph: "7.2"
         ...
 ```
 
@@ -154,23 +155,23 @@ Esses valores são **exemplos ilustrativos**, não dados reais do sistema. Os no
 
 | Origem: sensores | Destino |
 | --- | --- |
-| `Ar`, `Chuva`, `Gas` | `ar`, `chuva`, `gas` |
-| `Luz`, `Pressao`, `Rpm` | `luz`, `pressao`, `rpm` |
-| `Temperatura`, `Umidade`, `Vento`, `Volt` | `temperatura`, `umidade`, `vento`, `volt` |
-| `Hora` | `timestamp` |
+| `ar`, `chuva`, `gas` | `ar`, `chuva`, `gas` |
+| `luz`, `pressao`, `rpm` | `luz`, `pressao`, `rpm` |
+| `temperatura`, `umidade`, `vento`, `volt` | `temperatura`, `umidade`, `vento`, `volt` |
+| `hora` | `timestamp` |
 
 | Origem: boias | Destino |
 | --- | --- |
-| `ADC` | `adc` |
-| `Ph` | `ph` |
-| `Sensor UV(V)` | `sensor_uv_v` |
-| `Tensão(V)` | `tensao_v` |
-| `Turbidez(V)` | `turbidez_v` |
-| `Data` + `Hora` | `timestamp` |
+| `adc` | `adc` |
+| `ph` | `ph` |
+| `sensor_uv_v` | `sensor_uv_v` |
+| `tensao_v` | `tensao_v` |
+| `turbidez_v` | `turbidez_v` |
+| `hora` | `timestamp` |
 
-Os mapeamentos são definidos em `app/transformer/mapper.py`. Para os sensores, o timestamp esperado usa `AAAA-MM-DD HH:MM:SS`; para as boias, `DD/MM/AAAA` e `HH:MM:SS` são combinados. Outros formatos exigem adaptação de `app/transformer/timestamp.py`.
+Os mapeamentos são definidos em `app/transformer/mapper.py`. Sensores e boias usam `hora` no formato `AAAA-MM-DD HH:MM:SS`. O formato antigo com campos em maiúsculas e `Data` separada não é aceito pelo mapper atual. Metadados como `endereco_ip` e `identificador` não são persistidos.
 
-Em leituras de boias, valores numéricos vazios podem ser convertidos para `None`; valores numéricos não vazios são convertidos para `float`. Entradas com formatos inválidos podem gerar erros de normalização, registrados pelo worker.
+Em sensores e boias, valores numéricos ausentes ou vazios são convertidos para `None`; números e textos numéricos são convertidos para `float`. Booleanos, NaN, infinito e tipos inválidos são rejeitados. Sensores também possuem checagens de sanidade para alguns campos. As datas são convertidas sem informação de fuso horário; essa política precisa ser definida antes da produção.
 
 ## 🐘 Persistência e prevenção de duplicatas
 
@@ -178,6 +179,7 @@ O SQL em `app/sql/schema.sql` cria:
 
 - **`sensor_data`**: medições de estações/sensores, incluindo temperatura, umidade, chuva, vento e outras grandezas.
 - **`buoy_data`**: medições de boias, incluindo pH, turbidez, tensão e outras grandezas.
+- **`etl_checkpoint`**: última chave processada por `(source, device_id)`, com data de atualização.
 
 As duas tabelas são convertidas em **hypertables** por `timestamp` e possuem índices para consultas por tempo e equipamento.
 
@@ -189,6 +191,8 @@ DO NOTHING
 ```
 
 Com isso, o reprocessamento da mesma leitura não gera outra linha com a mesma chave. **Atenção:** esse comportamento também significa que uma leitura já inserida **não é atualizada** caso seu conteúdo mude no Firebase.
+
+Se os dados forem commitados, mas a gravação do checkpoint falhar, o próximo ciclo poderá relê-los com segurança quanto a duplicatas. A estratégia incremental depende da ordenação das chaves: novas leituras inseridas com chave anterior ao checkpoint não são buscadas automaticamente. Checkpoints não substituem backup nem uma política de reconciliação.
 
 ## 🚀 Instalação e execução local
 
@@ -245,7 +249,7 @@ Crie um arquivo `.env` na raiz do projeto:
 
 ```dotenv
 FIREBASE_DATABASE_URL=https://SEU-PROJETO-default-rtdb.firebaseio.com
-FIREBASE_CREDENTIALS=firebase/credentials/firebase_key.json
+FIREBASE_CREDENTIALS=app/firebase/credentials/firebase_key.json
 
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
@@ -259,7 +263,7 @@ ETL_INTERVAL_SECONDS=60
 | Variável | Descrição |
 | --- | --- |
 | `FIREBASE_DATABASE_URL` | URL do Realtime Database do projeto Firebase |
-| `FIREBASE_CREDENTIALS` | Caminho local do JSON da conta de serviço, absoluto ou relativo a `app/` |
+| `FIREBASE_CREDENTIALS` | Caminho do JSON da conta de serviço, absoluto ou relativo à raiz do projeto |
 | `POSTGRES_HOST` | Host do servidor PostgreSQL |
 | `POSTGRES_PORT` | Porta do PostgreSQL; padrão `5432` |
 | `POSTGRES_DB` | Nome do banco de dados |
@@ -267,17 +271,17 @@ ETL_INTERVAL_SECONDS=60
 | `POSTGRES_PASSWORD` | Senha de conexão |
 | `ETL_INTERVAL_SECONDS` | Intervalo entre ciclos; padrão `60` segundos |
 
-O caminho da credencial acima é **um exemplo local** compatível com a forma como `FirebaseClient` resolve o arquivo. Crie as pastas necessárias e coloque o JSON fora do versionamento. Verifique se o `.gitignore` contém **exatamente** entradas como:
+O caminho da credencial acima é **um exemplo local** compatível com a forma como `FirebaseClient` resolve o arquivo. Crie as pastas necessárias e coloque o JSON fora do versionamento. O `.gitignore` já possui regras para configurações privadas e diretórios de credenciais, incluindo:
 
 ```gitignore
 .env
 .venv/
 __pycache__/
 *.pyc
-app/firebase/credentials/*.json
+**/credentials/
 ```
 
-> O `.gitignore` foi revisado para excluir credenciais, configurações privadas, ZIPs e ambientes locais. Isso não remove arquivos já rastreados nem saneia o histórico. A chave mencionada no anexo depende de confirmação do mantenedor; se ativa, deve ser revogada/substituída antes da implantação. Não publique o segredo.
+> O `.gitignore` não remove arquivos já rastreados nem saneia o histórico. Confirme a procedência das credenciais e revogue/substitua qualquer chave que tenha sido exposta. Em produção, use um secret file externo à imagem e ao Git.
 
 ### 6. Inicialize o TimescaleDB
 
@@ -304,7 +308,7 @@ O worker executa ciclos continuamente até ser interrompido. Para encerrar com s
 
 Os logs mostram, separadamente para sensores e boias:
 
-- **Recebidos:** registros válidos para tentativa de processamento.
+- **Recebidos:** registros em formato de objeto posteriores ao checkpoint, antes da validação dos campos.
 - **Inseridos:** novas linhas persistidas no banco.
 - **Já existentes:** leituras ignoradas por conflito na chave primária.
 - **Erros:** leituras com falha na normalização ou persistência.
@@ -328,21 +332,29 @@ LIMIT 10;
 
 ## 🧪 Testes
 
-O repositório contém testes para conexão, transformação, timestamps, bootstrap, worker, idempotência e persistência.
+O repositório separa testes unitários offline de testes de integração. O teste de bootstrap legado está fora da suíte ativa.
 
-Para executar os testes com o `unittest`:
+Para executar somente os testes offline:
 
 ```bash
-python -m unittest discover -s tests -p "test*.py"
+python -m tests
+# Alternativa com unittest:
+python -m unittest discover -s tests/unit -t . -q
 ```
 
 Para um teste específico:
 
 ```bash
-python -m unittest tests.test_etl_worker
+python -m unittest tests.unit.test_etl_worker
 ```
 
-**Atenção:** vários testes podem acessar Firebase e PostgreSQL reais. Eles precisam de configuração válida e podem escrever dados. Execute-os preferencialmente com ambientes e bancos de teste; resultados dependem da disponibilidade dos serviços e da presença de leituras de exemplo.
+As integrações são puladas por padrão e exigem autorização explícita:
+
+```bash
+RUN_INTEGRATION=1 python -m tests.runner integration
+```
+
+No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a variável ao terminar. Use somente credenciais e banco de teste. Os testes ativos de escrita SQL usam tabelas temporárias por sessão; isso não valida hypertables ou índices TimescaleDB. Consulte [TESTING.md](docs/TESTING.md) para detalhes.
 
 ## 🔧 Diagnóstico de problemas
 
@@ -354,7 +366,7 @@ python -m unittest tests.test_etl_worker
 | `function create_hypertable does not exist` | Instale/ative a extensão TimescaleDB antes do `schema.sql` |
 | Erro ao converter timestamps | Compare os formatos das datas do Firebase com `timestamp.py` |
 | Erro de conversão numérica | Verifique strings e valores dos campos de boias/sensores |
-| Zero registros recebidos | Confira os nós `sensores/{id}/dados` e `boias/{id}/dados` |
+| Zero registros recebidos | Pode não haver chaves posteriores ao checkpoint; confira também os nós `sensores/{id}/dados` e `boias/{id}/dados` |
 | Zero registros novos, mas registros existentes | O mecanismo de idempotência pode estar ignorando leituras já salvas |
 | Push bloqueado pelo GitHub | Remova segredos dos commits e revise o `.gitignore`; não contorne a proteção |
 
@@ -362,10 +374,11 @@ python -m unittest tests.test_etl_worker
 
 ### Já implementado no fluxo principal
 
-- Consultas periódicas ao Firebase Realtime Database.
+- Consultas periódicas incrementais ao Firebase Realtime Database.
 - Processamento separado de sensores e boias.
 - Normalização de campos e timestamps.
-- Persistência no PostgreSQL/TimescaleDB.
+- Persistência em lote no PostgreSQL/TimescaleDB.
+- Checkpoint no banco por origem e equipamento.
 - Proteção contra duplicatas via `ON CONFLICT DO NOTHING`.
 - Logs e contadores por ciclo.
 - Tratamento de falhas por registro.
@@ -373,13 +386,14 @@ python -m unittest tests.test_etl_worker
 ### Pontos que ainda exigem atenção
 
 - **Listener em tempo real:** `listener.py` ainda não implementa a escuta efetiva.
-- **Bootstrap auxiliar:** há uma classe `BootstrapReader`, mas o ponto de entrada padrão usa `ETLWorker`; o bootstrap não é chamado automaticamente pelo `main.py`.
-- **Desempenho:** cada ciclo consulta todos os registros dos nós de sensores e boias, em vez de buscar somente registros novos. O custo pode crescer com o histórico.
+- **Carga inicial e backlog:** a leitura Firebase ainda não é paginada; todo o resultado por equipamento pode ficar em memória.
+- **Integridade:** faltam armazenamento de rejeições, reprocessamento e política para chaves atrasadas.
+- **Concorrência:** falta trava para impedir sobreposição de workers, inclusive durante deploys.
 - **Atualização de leituras:** o mecanismo de conflito não atualiza registros existentes.
-- **Observabilidade e deploy:** métricas externas, health checks, containerização e execução como serviço não estão documentados/implementados no fluxo principal inspecionado.
-- **Segurança:** o `.gitignore` precisa proteger corretamente o caminho das credenciais Firebase.
+- **Operação:** faltam tratamento explícito de SIGTERM, timeouts, recuperação robusta de conexão e alertas de ausência de sucesso.
+- **Deploy e segurança:** containerização, CI, validação de TLS, gestão de segredos e restauração de backups precisam ser preparados e testados.
 
-Esses itens são oportunidades de evolução, não funcionalidades já entregues.
+O [plano de preparação para produção](docs/preparacao-producao.md) detalha prioridades e critérios de aceite. A proposta inicial é um Render Background Worker com uma instância e banco externo compatível com TimescaleDB; não há implantação realizada nem capacidade aprovada. Listener em tempo real é uma evolução opcional, não um requisito para hospedar o polling atual.
 
 ## 🤝 Contribuição
 
