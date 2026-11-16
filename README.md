@@ -47,6 +47,12 @@ flowchart TD
     G --> I[(PostgreSQL + TimescaleDB)]
     H --> I
     D --> J[Logs e contadores por ciclo]
+    D --> K[Trava de sessão PostgreSQL]
+    K --> I
+    D --> L[CheckpointRepository]
+    L --> I
+    D --> M[RejectionRepository]
+    M --> I
 ```
 
 ### Funcionamento de um ciclo
@@ -54,17 +60,31 @@ flowchart TD
 Ao executar `python -m app.main`, o serviço:
 
 1. Inicializa o logger e lê a configuração do arquivo `.env`.
-2. Cria um `ETLWorker` com clientes e repositórios de persistência.
+2. Cria um `ETLWorker` com clientes e repositórios de persistência. Antes de cada ciclo, tenta adquirir a trava PostgreSQL; se estiver ocupada, pula o ciclo sem consultar o Firebase.
 3. Lista os equipamentos de `/sensores` com uma consulta rasa.
 4. Para cada equipamento, consulta `etl_checkpoint` e busca as chaves posteriores à última processada no nó `dados`. A consulta usa `start_at`, inclusivo, e descarta a leitura de fronteira.
-5. Normaliza as leituras e grava os objetos em lote, em páginas SQL de 500 registros e uma transação por chamada. Após o commit dos dados, grava o checkpoint em outra transação.
+5. Normaliza e categoriza todas as leituras do equipamento, sem interromper as demais por uma leitura inválida. Grava os válidos em lote, em páginas SQL de 500 registros, e as rejeições em `etl_rejections`. Após persistir os dois resultados, avança o checkpoint até a maior chave processada, mesmo quando há rejeições.
 6. Repete o processamento para `/boias`.
 7. Registra as estatísticas do ciclo no terminal.
 8. Aguarda o intervalo configurado e inicia uma nova consulta.
 
 **Importante:** a implementação principal utiliza *polling* (consultas periódicas), com espera padrão de **60 segundos após o término de cada ciclo**; não é uma agenda fixa a cada minuto. Sem checkpoint, a primeira consulta pode carregar todo o histórico de um equipamento. O arquivo `app/firebase/readers/listener.py` contém uma classe preparatória, mas o listener em tempo real **ainda não está implementado**.
 
-Falhas de normalização são registradas sem impedir as demais leituras, mas o checkpoint pode avançar além do registro inválido, que não será relido automaticamente. Uma falha na gravação do lote provoca rollback e impede o avanço daquele checkpoint. Exceções mais amplas durante um ciclo são registradas em `main.py`, que tenta executar o ciclo seguinte após o intervalo.
+**Rejeição é um resultado da classificação, não um bloqueio do ETL.** Erros de normalização, incluindo leituras que não sejam objetos JSON, são preservados com payload e motivo. Se um erro de dados/integridade no PostgreSQL derrubar um lote, ele é revertido e os registros são tentados individualmente: os válidos são inseridos e os inválidos vão para `etl_rejections`. O processamento normal não depende de correção manual na origem nem de resolução das rejeições.
+
+**Falha de infraestrutura é diferente de rejeição.** Se o banco estiver indisponível ou não conseguir salvar um dos resultados, o checkpoint daquele equipamento fica na posição anterior para não perder leituras sem destino durável. Os commits são separados: parte dos dados pode já estar salva e será relida com segurança quanto a duplicatas no ciclo seguinte. Exceções mais amplas durante um ciclo são registradas em `main.py`, que tenta executar o ciclo seguinte após o intervalo.
+
+### Exclusividade entre processos
+
+Uma trava de sessão PostgreSQL (`pg_try_advisory_lock`) protege o ciclo inteiro, incluindo sensores e boias, e também o comando de reprocessamento. As chamadas diretas a `process_sensors()` e `process_buoys()` são protegidas. Todos usam uma chave fixa compartilhada no banco; chamadas aninhadas não adquirem a mesma trava repetidamente.
+
+- Se outro processo estiver trabalhando, o loop pula o ciclo e aguarda o intervalo; o comando de reprocessamento retorna código `1`.
+- A trava permanece durante os commits dos repositórios e é liberada ao sair da operação, inclusive em exceções.
+- Se a sessão protegida for perdida, não há reconexão dentro daquela operação. Uma nova operação precisa adquirir a trava novamente antes de ler o Firebase ou persistir resultados.
+- Se não for possível liberar a trava por SQL, a sessão original é fechada. O PostgreSQL libera a trava quando essa sessão termina.
+- É necessária conexão direta ou **pooler em modo session**. Pooler em modo transaction não é compatível com esta trava de sessão.
+
+Não é necessária migração SQL para a trava. A proteção exige que todos os processos envolvidos executem esta versão e usem o mesmo banco; pare versões antigas sem trava antes da primeira implantação. Continue configurando uma instância: exclusão mútua não é distribuição de trabalho.
 
 ## 🧰 Tecnologias
 
@@ -99,15 +119,18 @@ etl_worker_python/
 │   │       └── listener.py            # Listener ainda não implementado
 │   ├── models/
 │   │   ├── sensor.py                  # Modelo Sensor
-│   │   └── buoy.py                    # Modelo Buoy
+│   │   ├── buoy.py                    # Modelo Buoy
+│   │   └── rejection.py               # Leitura rejeitada e motivo
 │   ├── repository/
 │   │   ├── base.py                    # Inserção em lote e transações
 │   │   ├── checkpoint_repository.py   # Progresso por origem e equipamento
+│   │   ├── rejection_repository.py    # Rejeições e tentativas de recuperação
 │   │   ├── sensor_repository.py       # INSERT de sensores (fluxo principal)
 │   │   └── buoy_repository.py         # INSERT de boias (fluxo principal)
 │   ├── sql/
+│   │   ├── migrations/                # Atualizações para bancos existentes
 │   │   ├── init_timescale.sql         # Ativação da extensão TimescaleDB
-│   │   └── schema.sql                 # Tabelas, hypertables, índices e checkpoint
+│   │   └── schema.sql                 # Medições, hypertables, índices, checkpoint e rejeições
 │   ├── transformer/
 │   │   ├── mapper.py                  # Mapeamento de nomes dos campos
 │   │   ├── normalize.py               # Normalização das leituras
@@ -116,8 +139,10 @@ etl_worker_python/
 │   │   └── logger.py                  # Configuração de logs
 │   ├── worker/
 │   │   └── etl_worker.py              # Orquestração da ingestão
+│   ├── reprocess_rejections.py        # Comando manual de recuperação
 │   └── main.py                        # Entrada e loop contínuo
 ├── docs/                               # Análises e preparação para produção
+├── legacy/                             # Bootstrap antigo, fora do fluxo principal
 ├── tests/                              # Testes unitários, integração e legado
 ├── .gitignore
 ├── README.md
@@ -180,8 +205,9 @@ O SQL em `app/sql/schema.sql` cria:
 - **`sensor_data`**: medições de estações/sensores, incluindo temperatura, umidade, chuva, vento e outras grandezas.
 - **`buoy_data`**: medições de boias, incluindo pH, turbidez, tensão e outras grandezas.
 - **`etl_checkpoint`**: última chave processada por `(source, device_id)`, com data de atualização.
+- **`etl_rejections`**: payload JSON, motivo, tentativas e datas de criação, última tentativa e resolução por `(source, device_id, firebase_id)`. É uma tabela comum, não uma hypertable.
 
-As duas tabelas são convertidas em **hypertables** por `timestamp` e possuem índices para consultas por tempo e equipamento.
+As duas tabelas de medições são convertidas em **hypertables** por `timestamp` e possuem índices para consultas por tempo e equipamento.
 
 A chave primária é composta por `(firebase_id, timestamp)`. Nas inserções, o projeto usa:
 
@@ -193,6 +219,8 @@ DO NOTHING
 Com isso, o reprocessamento da mesma leitura não gera outra linha com a mesma chave. **Atenção:** esse comportamento também significa que uma leitura já inserida **não é atualizada** caso seu conteúdo mude no Firebase.
 
 Se os dados forem commitados, mas a gravação do checkpoint falhar, o próximo ciclo poderá relê-los com segurança quanto a duplicatas. A estratégia incremental depende da ordenação das chaves: novas leituras inseridas com chave anterior ao checkpoint não são buscadas automaticamente. Checkpoints não substituem backup nem uma política de reconciliação.
+
+O código que gera as chaves nos dispositivos não está neste repositório. É necessário confirmar com a equipe de firmware a ordenação, o comportamento offline e a possibilidade de inserções atrasadas antes de aprovar essa garantia em produção.
 
 ## 🚀 Instalação e execução local
 
@@ -294,6 +322,14 @@ psql -h localhost -U postgres -d moringa -f app/sql/schema.sql
 
 Adapte host, usuário e nome do banco conforme seu `.env`. O comando `psql` requer o cliente PostgreSQL instalado e disponível no terminal. O usuário do banco precisa ter permissões para criar a extensão, tabelas e índices, ou essas etapas devem ser executadas por um administrador.
 
+**Banco já existente:** antes de iniciar a versão com rejeições, aplique a migração aditiva abaixo, primeiro em homologação. Para um banco novo, `schema.sql` já inclui a tabela.
+
+```bash
+psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/001_etl_rejections.sql
+```
+
+A migração não é executada automaticamente pelo worker e não recupera leituras rejeitadas por versões anteriores, que tenham ficado apenas nos logs.
+
 ### 7. Execute o ETL
 
 Na raiz do projeto, com o ambiente virtual ativo:
@@ -308,10 +344,12 @@ O worker executa ciclos continuamente até ser interrompido. Para encerrar com s
 
 Os logs mostram, separadamente para sensores e boias:
 
-- **Recebidos:** registros em formato de objeto posteriores ao checkpoint, antes da validação dos campos.
+- **Recebidos:** registros posteriores ao checkpoint, antes da validação do formato e dos campos.
 - **Inseridos:** novas linhas persistidas no banco.
 - **Já existentes:** leituras ignoradas por conflito na chave primária.
 - **Erros:** leituras com falha na normalização ou persistência.
+
+Esses contadores não substituem o diagnóstico operacional: falhas ao salvar rejeições ou checkpoints também são registradas nos logs e podem deixar o progresso na posição anterior. Uma mensagem de ciclo concluído, isoladamente, não comprova que todos os checkpoints avançaram.
 
 Para conferir no PostgreSQL:
 
@@ -329,6 +367,31 @@ FROM buoy_data
 ORDER BY timestamp DESC
 LIMIT 10;
 ```
+
+### 9. Reprocessamento opcional de rejeições
+
+O fluxo esperado é somente extração e classificação, sem alterações manuais no Firebase. Rejeições ficam registradas para auditoria e **não precisam ser resolvidas para o ETL continuar**. O comando abaixo é uma ferramenta excepcional de manutenção, não uma etapa obrigatória da ingestão.
+
+Se precisar utilizá-lo, use um ambiente configurado para o banco correto. O comando disputa a mesma trava da ingestão; se ela estiver ocupada, não inicia. Para uma janela de manutenção previsível, pare o worker antes de executar a recuperação.
+
+```bash
+# Após corrigir o normalizador: usa o payload salvo, sem consultar Firebase.
+python -m app.reprocess_rejections --limit 100
+
+# Após corrigir a leitura no Firebase: relê o registro pela chave exata.
+python -m app.reprocess_rejections --source sensores --device-id EST001 --limit 50 --refresh-from-firebase
+```
+
+Cada comando processa **um lote** de rejeições pendentes, priorizando as tentativas mais antigas. Não existe reprocessamento automático das rejeições no loop principal nem edição automática de payloads. Falhas operacionais da ingestão podem causar releitura no ciclo seguinte, pois impedem o avanço do checkpoint. `--source` e `--device-id` são filtros opcionais.
+
+- O registro só é marcado como resolvido após o commit da medição. Uma medição já existente também permite resolver a rejeição, sem atualizar seus valores.
+- Falhas de normalização, leitura ou insert mantêm a rejeição pendente e atualizam motivo/tentativas.
+- O reprocessamento preserva o payload salvo, mesmo ao reler o Firebase, e não move checkpoints.
+- Ausência da leitura no Firebase não apaga a rejeição.
+- Falha ao registrar a tentativa ou resolução interrompe o comando; se a medição já foi commitada, repetir é seguro quanto a duplicatas.
+- O código de saída é `0` quando não há erros no lote (inclusive lote vazio), `1` em falhas e `2` para argumentos inválidos.
+
+As rejeições contêm dados brutos e mensagens de erro: restrinja acesso à tabela e aos backups, não exponha payloads em logs e defina retenção antes da produção. Replay da ingestão atualiza a rejeição existente e pode reabri-la; o payload é preservado durante o reprocessamento, não um histórico imutável de todas as versões.
 
 ## 🧪 Testes
 
@@ -379,6 +442,10 @@ No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a v
 - Normalização de campos e timestamps.
 - Persistência em lote no PostgreSQL/TimescaleDB.
 - Checkpoint no banco por origem e equipamento.
+- Persistência durável de rejeições, sem bloquear o avanço por dados inválidos.
+- Isolamento de erros SQL de dados/integridade para não descartar os válidos do lote.
+- Comando opcional de reprocessamento, fora do fluxo normal.
+- Trava PostgreSQL compartilhada entre ingestão e reprocessamento, sem reconexão durante a operação protegida.
 - Proteção contra duplicatas via `ON CONFLICT DO NOTHING`.
 - Logs e contadores por ciclo.
 - Tratamento de falhas por registro.
@@ -387,13 +454,17 @@ No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a v
 
 - **Listener em tempo real:** `listener.py` ainda não implementa a escuta efetiva.
 - **Carga inicial e backlog:** a leitura Firebase ainda não é paginada; todo o resultado por equipamento pode ficar em memória.
-- **Integridade:** faltam armazenamento de rejeições, reprocessamento e política para chaves atrasadas.
-- **Concorrência:** falta trava para impedir sobreposição de workers, inclusive durante deploys.
+- **Integridade:** falta confirmar o contrato das chaves com o firmware e definir reconciliação para chaves atrasadas; rejeições anteriores à nova tabela não são recuperadas automaticamente.
+- **Concorrência:** a trava está implementada e coberta por testes offline; falta validar disputa entre processos, encerramento abrupto e o modo de conexão no ambiente de homologação.
 - **Atualização de leituras:** o mecanismo de conflito não atualiza registros existentes.
 - **Operação:** faltam tratamento explícito de SIGTERM, timeouts, recuperação robusta de conexão e alertas de ausência de sucesso.
 - **Deploy e segurança:** containerização, CI, validação de TLS, gestão de segredos e restauração de backups precisam ser preparados e testados.
 
-O [plano de preparação para produção](docs/preparacao-producao.md) detalha prioridades e critérios de aceite. A proposta inicial é um Render Background Worker com uma instância e banco externo compatível com TimescaleDB; não há implantação realizada nem capacidade aprovada. Listener em tempo real é uma evolução opcional, não um requisito para hospedar o polling atual.
+O [plano de preparação para produção](docs/preparacao-producao.md) detalha prioridades e critérios de aceite. A proposta é um **Render Cron diário**, com banco externo compatível com TimescaleDB; não há implantação realizada nem capacidade aprovada.
+
+**A execução agendada ainda não está implementada:** o método `ETLWorker.run_once()` existe, mas o módulo previsto `app.run_once` ainda não foi criado. Ele precisará fechar conexões e retornar um código de saída que distinga falhas operacionais de rejeições persistidas. **Não agende `python -m app.main` como cron**, pois esse comando executa um loop contínuo. A automação de migrações no deploy também permanece pendente.
+
+Listener em tempo real é uma evolução opcional, não um requisito para hospedar a ingestão atual.
 
 ## 🤝 Contribuição
 
