@@ -7,6 +7,7 @@ import time
 from app.utils.logger import get_logger
 from app.config.config import config
 from app.worker.etl_worker import ETLWorker
+from app.database.connection import WorkerAlreadyRunningError
 
 
 def main() -> None:
@@ -58,6 +59,13 @@ def main() -> None:
                     f"Boias inseridas: {boias[1]} | "
                     f"Boias existentes: {boias[2]} | "
                     f"Boias com erro: {boias[3]}"
+                )
+
+            except WorkerAlreadyRunningError:
+
+                logger.info(
+                    "Outro processo possui a trava do ETL; "
+                    "este ciclo não será executado."
                 )
 
             except Exception:

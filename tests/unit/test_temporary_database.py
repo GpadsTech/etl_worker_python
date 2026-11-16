@@ -26,9 +26,9 @@ class TestTemporaryDatabase(unittest.TestCase):
         self.assertIs(database.connect(), self.connection)
         statements = [call.args[0] for call in self.cursor.execute.call_args_list]
         self.assertEqual(statements[0], "SET search_path TO pg_temp, pg_catalog;")
-        self.assertEqual(len(statements), 4)
+        self.assertEqual(len(statements), 5)
         for table, statement in zip(
-            ("sensor_data", "buoy_data", "etl_checkpoint"), statements[1:],
+            ("sensor_data", "buoy_data", "etl_checkpoint", "etl_rejections"), statements[1:],
         ):
             self.assertIn(f"CREATE TEMP TABLE {table}", statement)
             self.assertIn("ON COMMIT PRESERVE ROWS", statement)
@@ -44,7 +44,7 @@ class TestTemporaryDatabase(unittest.TestCase):
         database.rollback()
         self.assertIs(database.connect(), first)
         self.connect.assert_called_once()
-        self.assertEqual(self.cursor.execute.call_count, 4)
+        self.assertEqual(self.cursor.execute.call_count, 5)
 
     def test_lost_session_does_not_reconnect_to_permanent_tables(self):
         database = TemporaryDatabase()
@@ -92,10 +92,11 @@ class TestTemporaryDatabase(unittest.TestCase):
         from tests.integration.test_etl_worker import TestETLWorker
         from tests.integration.test_idempotency import TestIdempotency
         from tests.integration.test_sensor_repository import TestSensorRepository
+        from tests.integration.test_rejections import TestRejections
 
         for test_class in (
             TestBatchTransaction, TestBuoyRepository, TestETLBuoy, TestETLSensor,
-            TestETLWorker, TestIdempotency, TestSensorRepository,
+            TestETLWorker, TestIdempotency, TestSensorRepository, TestRejections,
         ):
             with self.subTest(test_class=test_class.__name__):
                 self.assertTrue(issubclass(test_class, TemporaryDatabaseTestCase))
@@ -109,3 +110,4 @@ class TestTemporaryDatabase(unittest.TestCase):
         self.assertIs(worker.sensor_repository.database, database)
         self.assertIs(worker.buoy_repository.database, database)
         self.assertIs(worker.checkpoints.database, database)
+        self.assertIs(worker.rejections.database, database)

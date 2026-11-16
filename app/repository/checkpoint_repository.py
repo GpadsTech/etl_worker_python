@@ -2,7 +2,8 @@
 Repository do checkpoint de leitura incremental.
 
 Guarda, por origem (``sensores``/``boias``) e por equipamento, a última
-chave do Firebase já persistida. A próxima leitura começa nessa chave e
+chave do Firebase já processada (medição ou rejeição persistida).
+A próxima leitura começa nessa chave e
 pula o próprio registro de fronteira (``start_at`` é inclusivo).
 """
 
@@ -40,8 +41,8 @@ class CheckpointRepository:
         """
         Grava a última chave processada.
 
-        Deve ser chamado somente depois do commit dos dados. O upsert
-        mantém uma linha por (origem, equipamento).
+        Deve ser chamado somente depois dos commits dos dados e das
+        rejeições. O upsert mantém uma linha por (origem, equipamento).
         """
 
         connection = self.database.connect()

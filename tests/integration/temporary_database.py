@@ -57,6 +57,20 @@ class TemporaryDatabase(DatabaseConnection):
                         PRIMARY KEY (source, device_id)
                     ) ON COMMIT PRESERVE ROWS;
                 """)
+                cursor.execute("""
+                    CREATE TEMP TABLE etl_rejections (
+                        source TEXT NOT NULL CHECK (source IN ('sensores', 'boias')),
+                        device_id TEXT NOT NULL,
+                        firebase_id TEXT NOT NULL,
+                        payload JSONB NOT NULL,
+                        reason TEXT NOT NULL,
+                        attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts > 0),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        last_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        resolved_at TIMESTAMPTZ,
+                        PRIMARY KEY (source, device_id, firebase_id)
+                    ) ON COMMIT PRESERVE ROWS;
+                """)
             self.commit()
         except Exception:
             self.close()
