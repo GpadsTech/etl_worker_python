@@ -12,6 +12,9 @@ htmlcov/
 .env
 .env.*
 !.env.example
+!.env.etl.example
+!.env.supabase.example
+!.env.supabase.etl.example
 # Credenciais, chaves e anexos locais
 credentials/
 **/credentials/

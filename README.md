@@ -270,6 +270,20 @@ python -m pip install -r requirements.txt
 Use `.env.example` como modelo para o `.env` na raiz do projeto; não sobrescreva
 um `.env` existente com credenciais reais.
 
+Os modelos versionados estão separados por perfil:
+
+| Modelo | Arquivo privado | Uso |
+| --- | --- | --- |
+| [`.env.example`](.env.example) | `.env` | Inicialização/administração do PostgreSQL local |
+| [`.env.etl.example`](.env.etl.example) | `.env.etl` | Worker local com login restrito |
+| [`.env.supabase.example`](.env.supabase.example) | `.env.supabase` | Administração e migrações no Supabase |
+| [`.env.supabase.etl.example`](.env.supabase.etl.example) | `.env.supabase.etl` | Worker com login restrito no Supabase |
+
+Copiar apenas os modelos necessários, preencher os placeholders e proteger os
+arquivos privados com permissão `0600` em Linux/macOS. Não usar o perfil
+administrativo para executar o worker nem substituir arquivos já preenchidos.
+`ETL_ENV_FILE` é informado no comando de execução, não dentro do arquivo escolhido.
+
 ```dotenv
 FIREBASE_DATABASE_URL=https://SEU-PROJETO-default-rtdb.firebaseio.com
 FIREBASE_CREDENTIALS=app/firebase/credentials/firebase_key.json
