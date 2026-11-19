@@ -28,9 +28,12 @@ Dispositivos de campo, como estações de sensores e boias, produzem leituras co
 
 O projeto atua como uma **camada de ingestão de dados**. Ele não é, por si só, uma interface web ou uma API HTTP.
 
-O [diagnóstico técnico](docs/diagnostico.md) registra análises anteriores do projeto; algumas descrições antecedem a implementação incremental. Para configurar o ambiente, use o exemplo de variáveis neste README, sem valores reais.
+Para configurar o ambiente, use o exemplo de variáveis neste README, sem valores
+reais. O [guia SQL](app/sql/README.md) documenta as migrações e permissões;
+o [guia de testes](docs/TESTING.md) explica como validar o fluxo.
 
-O [plano de preparação para produção](docs/preparacao-producao.md) documenta os ajustes pendentes, critérios de validação e a arquitetura de deploy proposta. A hospedagem ainda não está implantada por este repositório.
+A [ADR de hospedagem](docs/adr-hospedagem.md) registra a decisão pelo Render Cron
+e o Supabase já configurado. O worker ainda não foi implantado no Render.
 
 ## 🏗️ Arquitetura e fluxo
 
@@ -555,7 +558,9 @@ No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a v
 - **Operação:** faltam tratamento explícito de SIGTERM, timeouts, recuperação robusta de conexão e alertas de ausência de sucesso.
 - **Deploy e segurança:** containerização, CI, validação de TLS, gestão de segredos e restauração de backups precisam ser preparados e testados.
 
-O [plano de preparação para produção](docs/preparacao-producao.md) detalha prioridades e critérios de aceite. A proposta é um **Render Cron diário**, com PostgreSQL do Supabase; não há implantação realizada nem capacidade aprovada.
+A [ADR de hospedagem](docs/adr-hospedagem.md) registra o **Render Cron diário**
+e o PostgreSQL do Supabase aprovado e configurado. A implantação do worker no
+Render e o dimensionamento operacional continuam pendentes.
 
 **A execução agendada ainda não está implementada:** o método `ETLWorker.run_once()` existe, mas o módulo previsto `app.run_once` ainda não foi criado. Ele precisará fechar conexões e retornar um código de saída que distinga falhas operacionais de rejeições persistidas. **Não agende `python -m app.main` como cron**, pois esse comando executa um loop contínuo. A automação de migrações no deploy também permanece pendente.
 

@@ -1,9 +1,10 @@
 # ADR — Render Cron para atualização diária do ETL
 
-**Data:** 16/11/2026. **Decisão:** adotar Render Cron no recorte inicial, substituindo a proposta de Background Worker contínuo. Implantação condicionada aos ajustes e testes abaixo; nada contratado ou implantado.
+**Data:** 16/11/2026. **Decisão:** adotar Render Cron no recorte inicial, substituindo a proposta de Background Worker contínuo, com PostgreSQL puro do Supabase como banco aprovado. O Supabase já está provisionado e configurado; a implantação do worker no Render continua pendente.
 
-**Atualização (18/11/2026):** destino definido como PostgreSQL puro do Supabase,
-sem extensão adicional; validar conexão, permissões e capacidade antes do deploy.
+**Atualização (19/11/2026):** PostgreSQL puro do Supabase provisionado, com conexão,
+TLS, permissões e migrações validados. Implantação do worker e capacidade no Render
+continuam pendentes; ver [configuração e migrações](../app/sql/README.md).
 
 ## Decisão e execução
 
@@ -20,7 +21,7 @@ Não agendar `app.main`, cujo loop não termina. **1–2 horas/dia são estimati
 | Código, testes e migrações | GitHub; imagem Docker identificada por commit, ainda a preparar |
 | Processo Python | Instância temporária do Render Cron em cada execução |
 | Dados de origem | Firebase Realtime Database |
-| Medições, rejeições e checkpoints | PostgreSQL do Supabase; backups e acesso a configurar |
+| Medições, rejeições e checkpoints | PostgreSQL do Supabase; acesso restrito configurado, backups a definir |
 | Exclusividade | Advisory lock na mesma sessão PostgreSQL dos repositórios |
 | Segredos e logs | Configuração/secret files do Render e coleta de stdout/stderr |
 
@@ -62,23 +63,26 @@ Economia: **US$ 6/mês (~86%)** frente ao Worker. Exclui banco, Firebase, excede
 - **TLS/segredos:** HTTPS/443 no Firebase; PostgreSQL com CA/hostname (`sslmode=verify-full`). Provisionar `POSTGRES_*`, `FIREBASE_DATABASE_URL` e secret file com `FIREBASE_CREDENTIALS=/etc/secrets/firebase_key.json`, fora do Git/imagem. Validar TLS, timeouts e acesso sem root.
 - **Logs:** stdout/stderr sem credenciais/payloads; Hobby retém 7 dias, Pro 14. Rejeições ficam no banco. Alertar falha ou ausência de sucesso diário.
 - **Limites/retomada:** máximo **12 horas/rodada**, uma execução do job por vez; atraso adia a próxima. Disparo manual cancela a ativa. Não presumir retry automático: próxima execução retoma checkpoints. Manter trava contra outros processos e implementar SIGTERM/encerramento seguro.
-- **CD:** migrações antes de promover o job, com histórico, usuário separado e bloqueio em falha; não presumir Pre-deploy Command de Worker para Cron. Ver [preparacao-producao.md](preparacao-producao.md).
+- **CD:** migrações antes de promover o job, com histórico, usuário separado e bloqueio em falha; não presumir Pre-deploy Command de Worker para Cron. Histórico automático e integração ao CD ainda precisam ser implementados; ver [guia SQL](../app/sql/README.md).
 
-## Supabase atende ao recorte inicial?
+## Supabase aprovado e configurado
 
-**Capacidade candidata, não aprovada.** Free: 500 MB de banco, CPU compartilhada/até 0,5 GB RAM, 5 GB egress, pausa após uma semana inativo e sem backups automáticos. Pro: a partir de US$ 25/mês, 8 GB disco, 250 GB egress, créditos para um Micro (1 GB RAM). Nano/Micro: 60 conexões DB/200 clientes pooler; o ETL usa uma sessão, sujeito ao saldo dos demais clientes.
+**Decisão aprovada:** usar PostgreSQL puro do Supabase no recorte inicial. A configuração do banco foi concluída, incluindo migrações 000–004, schema privado `etl_private`, roles de acesso, login restrito do ETL, TLS com certificado e timeouts. A conexão pelo pooler session e a integração com o Firebase foram validadas.
+
+Referência de planos consultada em 16/11/2026: Free com 500 MB de banco, CPU compartilhada/até 0,5 GB RAM, 5 GB egress, pausa após uma semana inativo e sem backups automáticos; Pro a partir de US$ 25/mês, 8 GB disco, 250 GB egress e créditos para um Micro (1 GB RAM). Nano/Micro: 60 conexões DB/200 clientes pooler. Esses limites devem ser acompanhados durante a operação, sem reabrir a escolha do provedor já aprovada.
 
 Os **13,365 MiB do banco de teste**, não da conta Supabase, indicam volume pequeno frente a 500 MB. Não validam crescimento, rejeições, egress, CPU ou retenção no serviço. RAM do banco é separada da RAM do cron.
 
-**Banco definido:** schema e migrações usam PostgreSQL puro, sem dependência de
-extensão. Testes locais em PostgreSQL 16 não substituem a validação de TLS,
-pooler em modo session, permissões e desempenho no Supabase.
+**Pendências operacionais, não de aprovação do Supabase:** primeira carga
+permanente, implantação do worker no Render, acompanhamento de crescimento e
+consumo, definição de backups e ensaio de restauração. A configuração concluída
+não equivale à implantação do worker nem a um ensaio de capacidade em produção.
 
-Cron + Supabase Free: referência **US$ 1/mês**; com Pro/Micro, **US$ 26/mês**, sem workspace Render Pro/extras e **condicionados à compatibilidade**, não contratação aprovada.
+Cron + Supabase Free: referência **US$ 1/mês**; com Pro/Micro, **US$ 26/mês**, sem workspace Render Pro/extras. São estimativas históricas de custo, não comprovação de contratação do Render ou de um plano pago do Supabase.
 
 ## Alternativa somente se Render não for viável
 
-Se orçamento, rede, região ou capacidade inviabilizarem Render, executar a mesma imagem de execução única em **VM Linux com systemd timer diário em UTC**, próxima do banco ou na rede institucional. Manter estado externo, trava, TLS e segredos; a equipe assume manutenção e supervisão. Não presumir VM gratuita. Trocar executor não resolve incompatibilidade do banco.
+Se orçamento, rede, região ou capacidade inviabilizarem Render, executar a mesma imagem de execução única em **VM Linux com systemd timer diário em UTC**, próxima do banco ou na rede institucional. Manter o Supabase como banco, além de trava, TLS e segredos; a equipe assume manutenção e supervisão da VM. Não presumir VM gratuita.
 
 ## Fontes consultadas
 
