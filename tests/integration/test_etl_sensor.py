@@ -13,7 +13,7 @@ Sensor
     ↓
 SensorRepository
     ↓
-TimescaleDB
+PostgreSQL
 """
 
 import unittest
@@ -32,7 +32,7 @@ from tests.integration.firebase_samples import buscar_leitura_real
 @integration_test
 class TestETLSensor(TemporaryDatabaseTestCase):
 
-    def test_firebase_to_timescaledb(self):
+    def test_firebase_to_postgresql(self):
 
         # =====================================================
         # 1. FIREBASE
@@ -66,7 +66,7 @@ class TestETLSensor(TemporaryDatabaseTestCase):
         print(sensor)
 
         # =====================================================
-        # 3. TIMESCALEDB
+        # 3. POSTGRESQL
         # =====================================================
 
         db = self.database
@@ -74,7 +74,7 @@ class TestETLSensor(TemporaryDatabaseTestCase):
 
         repository.insert(sensor)
 
-        print("\n[3] TimescaleDB")
+        print("\n[3] PostgreSQL")
         print("Sensor enviado para o banco.")
 
         # =====================================================

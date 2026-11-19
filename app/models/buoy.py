@@ -1,6 +1,6 @@
 """
 Modelo de domínio para boias. Representa uma linha da tabela 'boias'
-do TimescaleDB
+do PostgreSQL
 """
 
 from dataclasses import dataclass

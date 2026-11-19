@@ -3,11 +3,14 @@ Base para os repositórios ativos de persistência.
 
 Política de conflito: histórico append-only.
 
-A chave primária é ``(firebase_id, timestamp)`` e as inserções usam
+A chave primária é ``(equipamento, firebase_id)`` e as inserções usam
 ``ON CONFLICT DO NOTHING``. O banco guarda a primeira versão recebida de
 cada leitura; correções feitas no Firebase não são aplicadas. Essa é uma
 decisão explícita do projeto: não há upsert nem reconciliação enquanto a
 operação não exigir correções.
+
+O firebase_id não é reutilizado dentro de um equipamento. Alterações de
+timestamp ou payload da mesma leitura não criam uma nova linha.
 
 A chave primária não deve ser alterada para ``(equipamento, timestamp)``:
 existem leituras reais com o mesmo ``hora`` e ``firebase_id`` diferentes
@@ -30,6 +33,7 @@ class BaseRepository:
 
     table_name: str = ""
     columns: tuple[str, ...] = ()
+    conflict_columns: tuple[str, ...] = ()
 
     def __init__(self, database: DatabaseConnection):
         self.database = database
@@ -71,7 +75,7 @@ class BaseRepository:
             INSERT INTO {self.table_name}
             ({", ".join(self.columns)})
             VALUES %s
-            ON CONFLICT (firebase_id, timestamp)
+            ON CONFLICT ({", ".join(self.conflict_columns)})
             DO NOTHING
             RETURNING firebase_id;
         """

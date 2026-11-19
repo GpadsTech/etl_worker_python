@@ -1,6 +1,6 @@
 """
 Modelo de domínio para sensores. Representa uma linha da tabela 'sensores'
-do TimescaleDB
+do PostgreSQL
 """
 
 from dataclasses import dataclass

@@ -66,11 +66,11 @@ class TestIdempotency(TemporaryDatabaseTestCase):
                 SELECT COUNT(*)
                 FROM sensor_data
                 WHERE firebase_id = %s
-                  AND timestamp = %s;
+                  AND sensor_id = %s;
                 """,
                 (
                     sensor.firebase_id,
-                    sensor.timestamp,
+                    sensor.sensor_id,
                 )
             )
 
@@ -134,11 +134,11 @@ class TestIdempotency(TemporaryDatabaseTestCase):
                 SELECT COUNT(*)
                 FROM buoy_data
                 WHERE firebase_id = %s
-                  AND timestamp = %s;
+                  AND buoy_id = %s;
                 """,
                 (
                     buoy.firebase_id,
-                    buoy.timestamp,
+                    buoy.buoy_id,
                 )
             )
 

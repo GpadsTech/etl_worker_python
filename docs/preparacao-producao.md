@@ -4,6 +4,9 @@ Data da análise: 14/11/2026.
 
 Atualização de implementação: 16/11/2026.
 
+Atualização do banco (18/11/2026): PostgreSQL puro no Supabase é o destino
+escolhido. A extensão de séries temporais foi retirada do projeto.
+
 **Estado: preparação em andamento, sem liberação para produção.** Há implementações locais nos itens 3.1 e 3.3, com testes offline; as validações de integração continuam pendentes. A plataforma, a região, o orçamento e a capacidade ainda dependem de validação da equipe. Não houve contratação, implantação ou acesso aos serviços reais nesta análise.
 
 ## 1. Base atual
@@ -16,7 +19,7 @@ O fluxo ativo já possui:
 - Checkpoints persistidos em `etl_checkpoint`.
 - Normalização de sensores e boias.
 - Inserts em páginas SQL de 500 registros, com uma transação por chamada de `insert_many`.
-- Idempotência por `(firebase_id, timestamp)` com `ON CONFLICT DO NOTHING`.
+- Idempotência por `(equipamento, firebase_id)` com `ON CONFLICT DO NOTHING`.
 - Commit dos dados antes da gravação do checkpoint, em transações separadas.
 - Rejeições duráveis em `etl_rejections`; dados inválidos não impedem o avanço após persistir os resultados.
 - Isolamento de erros SQL de dados/integridade para preservar os registros válidos do lote.
@@ -26,7 +29,7 @@ O fluxo ativo já possui:
 
 Não há API HTTP no fluxo principal nem necessidade de disco local persistente para guardar o progresso. A credencial Firebase é um arquivo de configuração, não o estado da ingestão.
 
-Os testes offline cobrem rejeições, replay, avanço de checkpoint, aquisição/liberação da trava e proibição de reconexão durante uma operação protegida. Não foram executados testes reais de Firebase/PostgreSQL, carga, rede, TLS ou TimescaleDB. Testes SQL com tabelas temporárias não comprovam funcionamento das hypertables. As contagens variam com a evolução da suíte; executar `python -m tests` para o resultado atual.
+Os testes offline cobrem rejeições, replay, avanço de checkpoint, aquisição/liberação da trava e proibição de reconexão durante uma operação protegida. Bootstrap e migrações foram testados em PostgreSQL 16 descartável; carga, rede, TLS e integração com Supabase continuam pendentes. Testes com tabelas temporárias não comprovam desempenho dos índices. Executar `python -m tests` para a contagem atual.
 
 ## 2. Arquitetura de deploy proposta
 
@@ -37,7 +40,7 @@ GitHub → CI (testes/build) → Imagem Docker
                                  ↓
                            Render Cron diário
                              ├── HTTPS → Firebase RTDB
-                             ├── TLS → PostgreSQL/TimescaleDB
+                              ├── TLS → PostgreSQL do Supabase
                              └── Logs, métricas e alertas
 ```
 
@@ -52,21 +55,27 @@ Configuração inicial proposta:
 | Concorrência | Uma execução do job, com trava no banco contra outros processos |
 | Disco persistente | Indisponível no cron; estado deve permanecer no banco |
 | Segredos | Variáveis do provedor e JSON Firebase em secret file |
-| Banco | Externo ao worker, com backups e suporte explícito a TimescaleDB |
+| Banco | PostgreSQL do Supabase, externo ao worker, com backups a configurar |
 | Região | Escolher considerando banco, Firebase, latência e residência dos dados |
 | Monitoramento | Sucesso da ingestão, não apenas existência do processo |
 
-A decisão foi atualizada para Render Cron diário, com estimativa de 1–2 horas ativas por dia, conforme a [ADR de hospedagem](adr-hospedagem.md). A medição local de 9.293 leituras atingiu aproximadamente 70 MiB de RSS em simulação sem inserts; o plano de 512 MB é candidato a homologação, não capacidade aprovada. Supabase depende da validação de TimescaleDB ou de migração de schema. Somente se Render não for viável, considerar a mesma imagem de execução única em VM Linux com systemd timer.
+A decisão foi atualizada para Render Cron diário, com estimativa de 1–2 horas ativas por dia, conforme a [ADR de hospedagem](adr-hospedagem.md). A medição local de 9.293 leituras atingiu aproximadamente 70 MiB de RSS em simulação sem inserts; o plano de 512 MB é candidato a homologação, não capacidade aprovada. O destino é PostgreSQL puro no Supabase; conexão segura e permissões ainda precisam de validação. Somente se Render não for viável, considerar a mesma imagem de execução única em VM Linux com systemd timer.
 
 Não são necessários Kubernetes, Redis, Celery ou Airflow para executar o fluxo atual.
 
 ### Escolha do banco
 
-Os scripts `app/sql/init_timescale.sql` e `app/sql/schema.sql` exigem TimescaleDB. Confirmar extensão e versão suportadas antes de escolher o provedor. Um banco TimescaleDB já operado pela equipe ou um serviço gerenciado compatível, como Timescale Cloud, são candidatos.
+Usar PostgreSQL puro do Supabase, sem extensão adicional. `app/sql/schema.sql`
+cria tabelas comuns e índices por equipamento/tempo no schema privado `etl_private`.
+As roles de grupo `etl_writer` e `ai_reader` não possuem login; credenciais
+dedicadas devem ser provisionadas separadamente. Não expor o schema na Data API.
+Ver [permissões](../app/sql/README.md). O script de ativação da
+extensão antiga foi removido; não existe mais dependência de catálogos dela.
 
-PostgreSQL comum é uma alternativa somente após aprovar e testar uma migração que retire a dependência de hypertables. Não executar os scripts atuais presumindo compatibilidade.
-
-Supabase não é uma substituição direta garantida: sua documentação informa a depreciação da extensão TimescaleDB em projetos PostgreSQL 17. Verificar a oferta vigente e a versão efetiva antes de contratar.
+Para bancos existentes, aplicar as migrações versionadas antes de atualizar o
+worker. A 002 exige tabelas comuns, sem particionamento/herança, e bloqueia
+duplicidades sem removê-las. Transferência de estruturas antigas não é automática.
+Validar endpoint, TLS, permissões e modo session do pooler no Supabase.
 
 ### Execução agendada
 
@@ -142,12 +151,16 @@ Pendências:
 
 **Prioridade: bloqueador de segurança e disponibilidade. Responsáveis sugeridos: desenvolvimento e infraestrutura/DBA.**
 
-`app/database/connection.py` não configura explicitamente TLS nem timeout. A repetição do ciclo com espera fixa não equivale a uma política robusta de recuperação.
+`app/database/connection.py` configura TLS, CA e timeouts de conexão/SQL por
+variáveis de ambiente; ver `.env.example` e README. Hosts remotos usam
+`verify-full` por padrão; loopback usa `disable` se o modo não for informado.
+A validação real de certificado/hostname no Supabase continua pendente.
+A repetição do ciclo com espera fixa não equivale a uma política robusta de recuperação.
 
 Ajustes:
 
-- Configurar TLS PostgreSQL, preferindo `sslmode=verify-full`, CA confiável e hostname correto.
-- Configurar timeout de conexão, limites para operações SQL e limites de espera de rede Firebase.
+- Validar TLS PostgreSQL com `sslmode=verify-full`, CA confiável e hostname correto no Supabase.
+- Validar os timeouts PostgreSQL configurados e implementar limites de espera de rede Firebase.
 - Descartar sessões inutilizáveis, tratar rollback que falha e reconectar com segurança.
 - Aplicar tentativas limitadas com espera progressiva e jitter para falhas transitórias.
 - Diferenciar erro transitório de credencial inválida, configuração incorreta e registro inválido.
@@ -226,15 +239,24 @@ O `.gitignore` protege o versionamento futuro, mas não remove segredos do hist�
 
 **Prioridade: bloqueador de dados. Responsáveis sugeridos: DBA e desenvolvimento.**
 
-**Situação atual:** `app/sql/schema.sql` já define `etl_rejections`, e `app/sql/migrations/001_etl_rejections.sql` adiciona a tabela a bancos existentes. O worker não executa esses scripts ao iniciar. Ainda falta implementar o executor de migrações e sua integração ao deploy.
+**Situação atual:** `app/sql/schema.sql` é uma entrada para `psql` que inclui
+as migrações 000 (base), 001 (rejeições), 002 (identidade por equipamento) e
+003 (schema privado/permissões). Após a transferência, a entrada reaplica somente
+003 e 004 (instantes `TIMESTAMPTZ`) para não recriar cópias públicas;
+não há histórico automático de versões.
+As definições existem apenas nas migrações; a sequência atende banco vazio
+ou existente. O worker não executa esses scripts ao iniciar. Histórico automático
+de versões e integração ao deploy continuam pendentes.
 
 Ajustes:
 
-- Validar versão PostgreSQL, TimescaleDB, hypertables e índices em homologação.
+- Validar versão PostgreSQL, migrações e índices em homologação no Supabase.
 - Versionar e executar migrações como etapa controlada, fora do loop ETL.
-- Definir o fuso das medições; hoje `datetime.strptime` e colunas `TIMESTAMP` não registram timezone.
-- Se adotar `TIMESTAMPTZ`, planejar conversão do histórico com o fuso de origem correto.
-- Dimensionar armazenamento, índices, retenção e eventuais políticas TimescaleDB.
+- Origem confirmada pelo responsável: `America/Sao_Paulo`, inclusive no histórico.
+  Parser com fuso e migração 004 para `TIMESTAMPTZ` implementados; validar no Supabase.
+- Preservar regras históricas de horário de verão e revisar horas ambíguas/inexistentes
+  antes da migração, que aborta em vez de escolher um instante.
+- Dimensionar armazenamento, índices e retenção com recursos PostgreSQL.
 - Definir RPO (perda máxima tolerada) e RTO (tempo máximo de recuperação).
 - Configurar backups e testar restauração conjunta de dados e checkpoints.
 
@@ -242,7 +264,7 @@ Ajustes:
 
 Fluxo previsto: **CI (testes e build) → CD (migrações pendentes) → disponibilização da nova versão do ETL**.
 
-- **Inicialização de banco novo:** preparar TimescaleDB e executar `app/sql/init_timescale.sql` antes de `app/sql/schema.sql`, em etapa controlada com permissões administrativas. Não repetir esse bootstrap a cada deploy.
+- **Inicialização de banco novo:** executar `app/sql/schema.sql` em PostgreSQL puro, em etapa controlada com o usuário de migração. Não repetir esse bootstrap a cada deploy.
 - **Atualização de banco existente:** executar somente as migrações versionadas pendentes, antes de disponibilizar a versão que depende delas. Implementar histórico de versões aplicadas no banco, para que repetir o deploy não reaplique migrações concluídas.
 - **Falha de migração:** interromper o deploy e não disponibilizar a nova versão. Serializar migrações concorrentes e validar compatibilidade com a versão anterior durante a troca.
 - **Render Cron escolhido:** prever uma etapa dedicada de CD para executar migrações antes de ativar a nova versão do job; não presumir suporte ao Pre-deploy Command disponível para Workers pagos.
@@ -292,7 +314,7 @@ Custos e capacidade candidatos foram atualizados na [ADR](adr-hospedagem.md): cr
 - [ ] Paginação e uso de memória aprovados com backlog representativo.
 - [ ] Alertas de ingestão e heartbeat funcionando.
 - [ ] Imagem sem segredos, CI e rollback demonstrados.
-- [ ] Migrações, TimescaleDB e política de fuso validados.
+- [ ] Migrações PostgreSQL no Supabase e política de fuso validadas.
 - [ ] Executor de migrações com histórico integrado ao CD, usuário separado e bloqueio de deploy em caso de falha.
 - [ ] Backups e restauração conjunta de dados/checkpoints testados.
 - [ ] Capacidade, retenção, RPO e RTO aprovados.
@@ -303,6 +325,6 @@ Custos e capacidade candidatos foram atualizados na [ADR](adr-hospedagem.md): cr
 - [Render Cron Jobs](https://render.com/docs/cronjobs)
 - [Render: variáveis de ambiente e secret files](https://render.com/docs/configure-environment-variables)
 - [Render: preços](https://render.com/pricing)
-- [Supabase: TimescaleDB e depreciação no PostgreSQL 17](https://supabase.com/docs/guides/database/extensions/timescaledb)
+- [Supabase: conexão PostgreSQL](https://supabase.com/docs/guides/database/connecting-to-postgres)
 - [README](../README.md)
 - [Testes](TESTING.md)

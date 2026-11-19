@@ -318,7 +318,7 @@ class TestETLWorker(unittest.TestCase):
 
         def insert(objects):
             before = len(stored)
-            stored.update((obj.firebase_id, obj.timestamp) for obj in objects)
+            stored.update((obj.sensor_id, obj.firebase_id) for obj in objects)
             return len(stored) - before
 
         self.worker.sensor_repository.insert_many.side_effect = insert

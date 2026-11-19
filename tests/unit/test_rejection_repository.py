@@ -112,9 +112,11 @@ class TestRejectionRepository(unittest.TestCase):
         self.database.rollback.assert_called_once()
         self.database.commit.assert_not_called()
 
-    def test_schema_and_existing_database_migration_match(self):
+    def test_schema_reuses_rejections_migration_without_duplicate_ddl(self):
         root = Path(__file__).resolve().parents[2]
         schema = (root / "app/sql/schema.sql").read_text()
         migration = (root / "app/sql/migrations/001_etl_rejections.sql").read_text()
         table = "CREATE TABLE IF NOT EXISTS etl_rejections"
-        self.assertEqual(schema[schema.index(table):], migration[migration.index(table):])
+        self.assertIn(r"\ir migrations/001_etl_rejections.sql", schema)
+        self.assertIn(table, migration)
+        self.assertNotIn(table, schema)

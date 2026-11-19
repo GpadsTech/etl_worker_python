@@ -1,7 +1,7 @@
 """Isolamento SQL por sessão, sem gravar nem apagar tabelas permanentes.
 
 As tabelas temporárias preservam linhas entre commits e são descartadas pelo
-PostgreSQL ao fechar a conexão. Não substituem testes específicos de TimescaleDB.
+PostgreSQL ao fechar a conexão. Não substituem testes de índices e planos de consulta.
 """
 
 import unittest
@@ -43,9 +43,9 @@ class TemporaryDatabase(DatabaseConnection):
                         CREATE TEMP TABLE {repository.table_name} (
                             firebase_id TEXT NOT NULL,
                             {device_column} TEXT NOT NULL,
-                            timestamp TIMESTAMP NOT NULL,
+                            timestamp TIMESTAMPTZ NOT NULL,
                             {numeric_columns},
-                            PRIMARY KEY (firebase_id, timestamp)
+                            PRIMARY KEY ({device_column}, firebase_id)
                         ) ON COMMIT PRESERVE ROWS;
                     """)
                 cursor.execute("""

@@ -14,7 +14,7 @@ Buoy
     ↓
 BuoyRepository
     ↓
-TimescaleDB
+PostgreSQL
 """
 
 import unittest
@@ -33,7 +33,7 @@ from tests.integration.firebase_samples import buscar_leitura_real
 @integration_test
 class TestETLBuoy(TemporaryDatabaseTestCase):
 
-    def test_firebase_to_timescaledb(self):
+    def test_firebase_to_postgresql(self):
 
         # =====================================================
         # 1. FIREBASE
@@ -67,7 +67,7 @@ class TestETLBuoy(TemporaryDatabaseTestCase):
         print(buoy)
 
         # =====================================================
-        # 3. TIMESCALEDB
+        # 3. POSTGRESQL
         # =====================================================
 
         db = self.database
@@ -75,7 +75,7 @@ class TestETLBuoy(TemporaryDatabaseTestCase):
 
         repository.insert(buoy)
 
-        print("\n[3] TimescaleDB")
+        print("\n[3] PostgreSQL")
         print("Boia enviada para o banco.")
 
         # =====================================================

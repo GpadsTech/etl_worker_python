@@ -1,6 +1,6 @@
 """
 Repository responsável pela persistência de sensores
-no PostgreSQL / TimescaleDB.
+no PostgreSQL.
 
 A política de conflito (histórico append-only) está documentada em
 ``app/repository/base.py``.
@@ -15,6 +15,7 @@ class SensorRepository(BaseRepository):
     """
 
     table_name = "sensor_data"
+    conflict_columns = ("sensor_id", "firebase_id")
 
     columns = (
         "firebase_id",

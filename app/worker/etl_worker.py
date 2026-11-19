@@ -5,7 +5,7 @@ Responsável por:
 
 - Ler dados do Firebase de forma incremental (checkpoint por equipamento)
 - Normalizar os registros
-- Persistir os dados no TimescaleDB em lote
+- Persistir os dados no PostgreSQL em lote
 - Tratar erros individuais sem interromper o processamento
 """
 from functools import wraps

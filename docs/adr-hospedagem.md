@@ -2,6 +2,9 @@
 
 **Data:** 16/11/2026. **Decisão:** adotar Render Cron no recorte inicial, substituindo a proposta de Background Worker contínuo. Implantação condicionada aos ajustes e testes abaixo; nada contratado ou implantado.
 
+**Atualização (18/11/2026):** destino definido como PostgreSQL puro do Supabase,
+sem extensão adicional; validar conexão, permissões e capacidade antes do deploy.
+
 ## Decisão e execução
 
 Usar **um Render Cron Job**, em imagem Docker por commit, com **`0.5c-512mb` (0,5 CPU, 512 MB RAM)**. Atualização diária aceita pelo usuário; agenda proposta **`0 3 * * *` — 03:00 UTC**, a confirmar.
@@ -17,7 +20,7 @@ Não agendar `app.main`, cujo loop não termina. **1–2 horas/dia são estimati
 | Código, testes e migrações | GitHub; imagem Docker identificada por commit, ainda a preparar |
 | Processo Python | Instância temporária do Render Cron em cada execução |
 | Dados de origem | Firebase Realtime Database |
-| Medições, rejeições e checkpoints | PostgreSQL externo, com backups; provedor condicionado à compatibilidade |
+| Medições, rejeições e checkpoints | PostgreSQL do Supabase; backups e acesso a configurar |
 | Exclusividade | Advisory lock na mesma sessão PostgreSQL dos repositórios |
 | Segredos e logs | Configuração/secret files do Render e coleta de stdout/stderr |
 
@@ -67,7 +70,9 @@ Economia: **US$ 6/mês (~86%)** frente ao Worker. Exclui banco, Firebase, excede
 
 Os **13,365 MiB do banco de teste**, não da conta Supabase, indicam volume pequeno frente a 500 MB. Não validam crescimento, rejeições, egress, CPU ou retenção no serviço. RAM do banco é separada da RAM do cron.
 
-**Bloqueio:** SQL exige TimescaleDB, depreciado pelo Supabase no PostgreSQL 17. O teste local em PostgreSQL 18.6/TimescaleDB 2.31.0 não comprova compatibilidade lá. Validar versão/extensão ou aprovar migração para PostgreSQL comum; mantendo TimescaleDB obrigatório, escolher banco compatível.
+**Banco definido:** schema e migrações usam PostgreSQL puro, sem dependência de
+extensão. Testes locais em PostgreSQL 16 não substituem a validação de TLS,
+pooler em modo session, permissões e desempenho no Supabase.
 
 Cron + Supabase Free: referência **US$ 1/mês**; com Pro/Micro, **US$ 26/mês**, sem workspace Render Pro/extras e **condicionados à compatibilidade**, não contratação aprovada.
 
@@ -78,4 +83,4 @@ Se orçamento, rede, região ou capacidade inviabilizarem Render, executar a mes
 ## Fontes consultadas
 
 - Render: [Cron e limites](https://render.com/docs/cronjobs), [preços](https://render.com/pricing), [regiões](https://render.com/docs/regions), [rede IPv4](https://render.com/articles/how-to-connect-a-render-service-to-supabase-postgres).
-- Supabase: [preços](https://supabase.com/pricing), [compute e conexões](https://supabase.com/docs/guides/platform/compute-and-disk), [conexão/TLS](https://supabase.com/docs/guides/database/connecting-to-postgres), [TimescaleDB](https://supabase.com/docs/guides/database/extensions/timescaledb).
+- Supabase: [preços](https://supabase.com/pricing), [compute e conexões](https://supabase.com/docs/guides/platform/compute-and-disk), [conexão/TLS](https://supabase.com/docs/guides/database/connecting-to-postgres).

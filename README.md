@@ -7,7 +7,6 @@
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Firebase](https://img.shields.io/badge/Firebase-Realtime%20Database-FFCA28?logo=firebase&logoColor=black)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white)
-![TimescaleDB](https://img.shields.io/badge/TimescaleDB-Time--series-1A63A4)
 
 Projeto integrante do ecossistema de monitoramento ambiental **MoRHInGA**, desenvolvido no contexto do **GPADS**.
 
@@ -17,7 +16,7 @@ Projeto integrante do ecossistema de monitoramento ambiental **MoRHInGA**, desen
 
 ## 📌 Visão geral
 
-O **MoRHInGA ETL Worker** é um serviço em Python responsável por transferir e estruturar medições ambientais armazenadas no **Firebase Realtime Database** para um banco **PostgreSQL com extensão TimescaleDB**.
+O **MoRHInGA ETL Worker** é um serviço em Python responsável por transferir e estruturar medições ambientais armazenadas no **Firebase Realtime Database** para um banco **PostgreSQL**.
 
 Dispositivos de campo, como estações de sensores e boias, produzem leituras com nomes de campos e formatos de data próprios. O worker consulta essas leituras, normaliza seus campos, converte datas e valores quando necessário e persiste os registros em tabelas preparadas para consultas históricas.
 
@@ -44,7 +43,7 @@ flowchart TD
     D --> F[Normalização das boias]
     E --> G[SensorRepository]
     F --> H[BuoyRepository]
-    G --> I[(PostgreSQL + TimescaleDB)]
+    G --> I[(PostgreSQL / Supabase)]
     H --> I
     D --> J[Logs e contadores por ciclo]
     D --> K[Trava de sessão PostgreSQL]
@@ -93,7 +92,6 @@ Não é necessária migração SQL para a trava. A proteção exige que todos os
 | Python | Implementação do worker e regras de transformação |
 | Firebase Admin SDK | Autenticação e leitura do Firebase Realtime Database |
 | PostgreSQL | Persistência relacional das medições |
-| TimescaleDB | Extensão de séries temporais e hypertables |
 | psycopg2 | Conexão e transações SQL |
 | python-dotenv | Carregamento das variáveis de ambiente |
 | colorlog | Logs coloridos no terminal |
@@ -129,8 +127,7 @@ etl_worker_python/
 │   │   └── buoy_repository.py         # INSERT de boias (fluxo principal)
 │   ├── sql/
 │   │   ├── migrations/                # Atualizações para bancos existentes
-│   │   ├── init_timescale.sql         # Ativação da extensão TimescaleDB
-│   │   └── schema.sql                 # Medições, hypertables, índices, checkpoint e rejeições
+│   │   └── schema.sql                 # Medições, índices, checkpoint e rejeições
 │   ├── transformer/
 │   │   ├── mapper.py                  # Mapeamento de nomes dos campos
 │   │   ├── normalize.py               # Normalização das leituras
@@ -196,7 +193,7 @@ Esses valores são **exemplos ilustrativos**, não dados reais do sistema. Os no
 
 Os mapeamentos são definidos em `app/transformer/mapper.py`. Sensores e boias usam `hora` no formato `AAAA-MM-DD HH:MM:SS`. O formato antigo com campos em maiúsculas e `Data` separada não é aceito pelo mapper atual. Metadados como `endereco_ip` e `identificador` não são persistidos.
 
-Em sensores e boias, valores numéricos ausentes ou vazios são convertidos para `None`; números e textos numéricos são convertidos para `float`. Booleanos, NaN, infinito e tipos inválidos são rejeitados. Sensores também possuem checagens de sanidade para alguns campos. As datas são convertidas sem informação de fuso horário; essa política precisa ser definida antes da produção.
+Em sensores e boias, valores numéricos ausentes ou vazios são convertidos para `None`; números e textos numéricos são convertidos para `float`. Booleanos, NaN, infinito e tipos inválidos são rejeitados. Sensores também possuem checagens de sanidade para alguns campos. O campo `hora` é interpretado em **`America/Sao_Paulo`**, inclusive no histórico, conforme confirmação do responsável. O parser produz datas com fuso e as medições usam `TIMESTAMPTZ`. Horários ambíguos ou inexistentes nas transições históricas de horário de verão são rejeitados para revisão, sem escolher um instante automaticamente.
 
 ## 🐘 Persistência e prevenção de duplicatas
 
@@ -205,18 +202,12 @@ O SQL em `app/sql/schema.sql` cria:
 - **`sensor_data`**: medições de estações/sensores, incluindo temperatura, umidade, chuva, vento e outras grandezas.
 - **`buoy_data`**: medições de boias, incluindo pH, turbidez, tensão e outras grandezas.
 - **`etl_checkpoint`**: última chave processada por `(source, device_id)`, com data de atualização.
-- **`etl_rejections`**: payload JSON, motivo, tentativas e datas de criação, última tentativa e resolução por `(source, device_id, firebase_id)`. É uma tabela comum, não uma hypertable.
+- **`etl_rejections`**: payload JSON, motivo, tentativas e datas de criação, última tentativa e resolução por `(source, device_id, firebase_id)`.
 
-As duas tabelas de medições são convertidas em **hypertables** por `timestamp` e possuem índices para consultas por tempo e equipamento.
+As duas tabelas de medições são tabelas PostgreSQL comuns e possuem índices
+para consultas por tempo e equipamento.
 
-A chave primária é composta por `(firebase_id, timestamp)`. Nas inserções, o projeto usa:
-
-```sql
-ON CONFLICT (firebase_id, timestamp)
-DO NOTHING
-```
-
-Com isso, o reprocessamento da mesma leitura não gera outra linha com a mesma chave. **Atenção:** esse comportamento também significa que uma leitura já inserida **não é atualizada** caso seu conteúdo mude no Firebase.
+As chaves são `(sensor_id, firebase_id)` e `(buoy_id, firebase_id)`, com `ON CONFLICT DO NOTHING`. O reprocessamento não duplica a leitura, mesmo se o horário mudar. IDs distintos no mesmo horário e IDs iguais em equipamentos diferentes são preservados. **Atenção:** a primeira versão recebida é mantida; alterações no Firebase não atualizam a linha.
 
 Se os dados forem commitados, mas a gravação do checkpoint falhar, o próximo ciclo poderá relê-los com segurança quanto a duplicatas. A estratégia incremental depende da ordenação das chaves: novas leituras inseridas com chave anterior ao checkpoint não são buscadas automaticamente. Checkpoints não substituem backup nem uma política de reconciliação.
 
@@ -228,7 +219,7 @@ O código que gera as chaves nos dispositivos não está neste repositório. É 
 
 - Python compatível com as dependências do projeto (recomenda-se começar com **Python 3.12**).
 - Git.
-- Banco PostgreSQL com a extensão TimescaleDB instalada e disponível.
+- Banco PostgreSQL, local ou no Supabase, sem extensões adicionais.
 - Projeto Firebase Realtime Database acessível.
 - Uma **chave de conta de serviço** com as permissões adequadas, fornecida de forma segura pela equipe responsável.
 
@@ -273,7 +264,8 @@ python -m pip install -r requirements.txt
 
 ### 5. Configure as variáveis de ambiente
 
-Crie um arquivo `.env` na raiz do projeto:
+Use `.env.example` como modelo para o `.env` na raiz do projeto; não sobrescreva
+um `.env` existente com credenciais reais.
 
 ```dotenv
 FIREBASE_DATABASE_URL=https://SEU-PROJETO-default-rtdb.firebaseio.com
@@ -284,6 +276,12 @@ POSTGRES_PORT=5432
 POSTGRES_DB=moringa
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=SUA_SENHA_LOCAL
+POSTGRES_SCHEMA=etl_private
+POSTGRES_SSLMODE=disable
+POSTGRES_SSLROOTCERT=
+POSTGRES_CONNECT_TIMEOUT=10
+POSTGRES_STATEMENT_TIMEOUT_MS=60000
+POSTGRES_LOCK_TIMEOUT_MS=5000
 
 ETL_INTERVAL_SECONDS=60
 ```
@@ -297,7 +295,23 @@ ETL_INTERVAL_SECONDS=60
 | `POSTGRES_DB` | Nome do banco de dados |
 | `POSTGRES_USER` | Usuário de conexão |
 | `POSTGRES_PASSWORD` | Senha de conexão |
+| `POSTGRES_SCHEMA` | Schema de acesso; padrão `etl_private`; identificador simples em minúsculas |
+| `POSTGRES_SSLMODE` | `disable`, `allow`, `prefer`, `require`, `verify-ca` ou `verify-full`; omitido: `disable` em loopback e `verify-full` nos demais hosts |
+| `POSTGRES_SSLROOTCERT` | Caminho de arquivo CA legível; omitido usa a configuração de confiança padrão do libpq |
+| `POSTGRES_CONNECT_TIMEOUT` | Timeout de conexão em segundos; padrão `10`, mínimo `1` (libpq usa no mínimo 2 segundos) |
+| `POSTGRES_STATEMENT_TIMEOUT_MS` | Duração máxima por comando SQL; padrão `60000` ms; `0` desativa |
+| `POSTGRES_LOCK_TIMEOUT_MS` | Espera máxima por lock SQL; padrão `5000` ms; `0` desativa |
 | `ETL_INTERVAL_SECONDS` | Intervalo entre ciclos; padrão `60` segundos |
+| `ETL_ENV_FILE` | Arquivo de configuração alternativo, informado no ambiente do processo; omitido mantém `.env` |
+
+**Supabase:** use os valores de host, porta, banco e usuário fornecidos pelo painel.
+Escolha conexão direta ou pooler **session**, nunca transaction por causa da trava
+de sessão. Configure `POSTGRES_SSLMODE=verify-full` e a CA confiável apropriada
+em `POSTGRES_SSLROOTCERT` (ou no local padrão do libpq). `require` exige criptografia,
+mas não garante a verificação do hostname. Limites e schema são aplicados
+explicitamente na sessão após conectar, pois o pooler pode sobrescrever opções
+de startup; reconexões reaplicam a configuração e não ocorrem durante uma trava
+perdida. Valores inválidos são recusados sem imprimir credenciais.
 
 O caminho da credencial acima é **um exemplo local** compatível com a forma como `FirebaseClient` resolve o arquivo. Crie as pastas necessárias e coloque o JSON fora do versionamento. O `.gitignore` já possui regras para configurações privadas e diretórios de credenciais, incluindo:
 
@@ -311,24 +325,105 @@ __pycache__/
 
 > O `.gitignore` não remove arquivos já rastreados nem saneia o histórico. Confirme a procedência das credenciais e revogue/substitua qualquer chave que tenha sido exposta. Em produção, use um secret file externo à imagem e ao Git.
 
-### 6. Inicialize o TimescaleDB
+### 6. Inicialize o PostgreSQL
 
-Depois de criar o banco PostgreSQL e disponibilizar a extensão TimescaleDB, execute os scripts SQL **nesta ordem**:
+#### Banco local com Docker Compose
+
+O `docker-compose.yml` usa PostgreSQL **18.7**, com usuário, senha, banco e porta
+do `.env` existente. Na configuração local atual, o worker continua acessando
+`localhost:5433`; a porta interna do container é `5432`.
+
+Pare o banco anterior se ele ocupar a mesma porta e execute:
 
 ```bash
-psql -h localhost -U postgres -d moringa -f app/sql/init_timescale.sql
-psql -h localhost -U postgres -d moringa -f app/sql/schema.sql
+docker compose up -d --wait postgres
+docker compose ps
 ```
 
-Adapte host, usuário e nome do banco conforme seu `.env`. O comando `psql` requer o cliente PostgreSQL instalado e disponível no terminal. O usuário do banco precisa ter permissões para criar a extensão, tabelas e índices, ou essas etapas devem ser executadas por um administrador.
+O serviço fica acessível apenas na máquina local. Os dados ficam no volume
+`postgres18_data`, separado do banco antigo. O schema é criado automaticamente
+**somente na primeira inicialização com volume vazio**: `schema.sql` executa as
+migrações 000/001/002/003/004 automaticamente. Dados do banco anterior não são importados.
+Não reutilize o volume antigo nem execute `docker compose down -v` se quiser
+preservar os dados.
 
-**Banco já existente:** antes de iniciar a versão com rejeições, aplique a migração aditiva abaixo, primeiro em homologação. Para um banco novo, `schema.sql` já inclui a tabela.
+Para parar sem apagar o volume:
 
 ```bash
+docker compose down
+```
+
+#### Banco sem Docker ou já existente
+
+Para banco novo ou existente, execute a entrada `psql`, que aplica as migrações
+000 → 001 → 002 → 003 → 004 em ordem e interrompe em caso de erro:
+
+```bash
+psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/schema.sql
+```
+
+Adapte host, usuário e nome do banco conforme seu `.env`. O usuário de migração precisa ser dono das tabelas e poder criar schema/roles (`CREATEROLE`). Não use essa credencial administrativa no worker. PostgreSQL puro é o único destino suportado.
+
+**Banco já existente:** com o ETL parado, valide e aplique as migrações em ordem no ambiente de teste. A 002 exige tabelas comuns, sem particionamento/herança, e aborta diante de duplicidades por equipamento/ID, sem apagar dados. Estruturas antigas gerenciadas por extensão precisam ser transferidas para tabelas comuns; não há conversão automática nem exclusão de dados. Não inicie o worker atualizado antes de atualizar as chaves. Em produção, faça backup e valide em homologação.
+
+```bash
+psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/000_initial_schema.sql
 psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/001_etl_rejections.sql
+psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/002_device_reading_identity.sql
+psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/003_private_access.sql
+psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/004_measurement_timestamptz.sql
 ```
+
+Os comandos individuais acima são alternativa ao `schema.sql`, não uma etapa
+adicional. Toda a definição está nas migrações; `schema.sql` apenas as inclui com
+`\ir`, portanto requer **psql**, não execução direta por psycopg2 ou pelo SQL Editor.
+No SQL Editor do Supabase, executar o conteúdo das migrações individualmente em ordem.
+Não há executor com histórico automático: registrar externamente as versões
+aplicadas. Depois da 003, `schema.sql` detecta a transferência e executa apenas 003/004,
+sem recriar as tabelas em `public`. Não reaplicar manualmente 000/001/002 após essa
+etapa. Executar com o ETL parado, não a cada inicialização.
 
 A migração não é executada automaticamente pelo worker e não recupera leituras rejeitadas por versões anteriores, que tenham ficado apenas nos logs.
+
+#### Permissões e Data API
+
+A 003 move sensores, boias, checkpoints e rejeições para `etl_private`.
+As roles `etl_writer` e `ai_reader` são grupos sem login nem senha:
+ETL insere/consulta medições e atualiza seu estado; IA só consulta medições.
+Nenhum usuário é associado automaticamente. Provisionar a credencial restrita
+do worker separadamente; manter a IA sem login até existir um consumidor.
+
+**Não expor `etl_private` pela Data API.** A migração revoga acesso de `PUBLIC`
+e das roles de API existentes (`anon`, `authenticated`, `service_role`).
+Não há políticas RLS porque a opção adotada é acesso PostgreSQL privado.
+Veja [migrações e provisionamento](app/sql/README.md).
+Aplicar a 003 antes de usar o novo padrão `POSTGRES_SCHEMA=etl_private`.
+Aplicar a 004 antes de executar o parser com fuso. Ela converte o histórico com
+`timestamp AT TIME ZONE 'America/Sao_Paulo'`, sem depender do fuso da sessão.
+`TIMESTAMPTZ` representa o instante; a exibição depende do fuso do cliente.
+Para visualizar no horário de origem: `timestamp AT TIME ZONE 'America/Sao_Paulo'`.
+Não usar UTC−03:00 fixo para todo o histórico, pois houve horário de verão.
+
+Para separar a credencial administrativa local da credencial restrita do worker,
+usar um arquivo privado `.env.etl` e iniciar com:
+
+```bash
+ETL_ENV_FILE=.env.etl .venv/bin/python -m app.main
+```
+
+O `.env` original continua disponível para administrar o banco e inicializar o
+Docker Compose. `.env.etl` deve ficar fora do Git e legível apenas pelo proprietário.
+Variáveis já exportadas no processo têm precedência sobre o arquivo escolhido.
+
+No Supabase provisionado, usar `.env.supabase` somente para migrações/administração
+e `.env.supabase.etl` para o worker, com credencial restrita:
+
+```bash
+ETL_ENV_FILE=.env.supabase.etl .venv/bin/python -m app.main
+```
+
+Esse comando inicia a ingestão permanente; testes de integração comuns usam
+tabelas temporárias e não carregam o histórico nas tabelas definitivas.
 
 ### 7. Execute o ETL
 
@@ -417,7 +512,7 @@ As integrações são puladas por padrão e exigem autorização explícita:
 RUN_INTEGRATION=1 python -m tests.runner integration
 ```
 
-No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a variável ao terminar. Use somente credenciais e banco de teste. Os testes ativos de escrita SQL usam tabelas temporárias por sessão; isso não valida hypertables ou índices TimescaleDB. Consulte [TESTING.md](docs/TESTING.md) para detalhes.
+No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a variável ao terminar. Use somente credenciais e banco de teste. Os testes comuns de escrita SQL usam tabelas temporárias por sessão; isso não valida desempenho dos índices. A suíte de permissões exige autorização extra e cluster descartável, pois cria roles e objetos permanentes. Consulte [TESTING.md](docs/TESTING.md) para detalhes.
 
 ## 🔧 Diagnóstico de problemas
 
@@ -426,7 +521,7 @@ No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a v
 | `FileNotFoundError` para credenciais | Revise `FIREBASE_CREDENTIALS` e a existência do JSON local |
 | Erro de autenticação Firebase | Verifique a validade da conta de serviço e suas permissões |
 | Erro de conexão com PostgreSQL | Confirme host, porta, banco, usuário, senha e servidor ativo |
-| `function create_hypertable does not exist` | Instale/ative a extensão TimescaleDB antes do `schema.sql` |
+| Migração 002 recusa tabelas com particionamento/herança | Transfira os dados para tabelas PostgreSQL comuns antes de aplicar a migração |
 | Erro ao converter timestamps | Compare os formatos das datas do Firebase com `timestamp.py` |
 | Erro de conversão numérica | Verifique strings e valores dos campos de boias/sensores |
 | Zero registros recebidos | Pode não haver chaves posteriores ao checkpoint; confira também os nós `sensores/{id}/dados` e `boias/{id}/dados` |
@@ -440,7 +535,7 @@ No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a v
 - Consultas periódicas incrementais ao Firebase Realtime Database.
 - Processamento separado de sensores e boias.
 - Normalização de campos e timestamps.
-- Persistência em lote no PostgreSQL/TimescaleDB.
+- Persistência em lote no PostgreSQL.
 - Checkpoint no banco por origem e equipamento.
 - Persistência durável de rejeições, sem bloquear o avanço por dados inválidos.
 - Isolamento de erros SQL de dados/integridade para não descartar os válidos do lote.
@@ -460,7 +555,7 @@ No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a v
 - **Operação:** faltam tratamento explícito de SIGTERM, timeouts, recuperação robusta de conexão e alertas de ausência de sucesso.
 - **Deploy e segurança:** containerização, CI, validação de TLS, gestão de segredos e restauração de backups precisam ser preparados e testados.
 
-O [plano de preparação para produção](docs/preparacao-producao.md) detalha prioridades e critérios de aceite. A proposta é um **Render Cron diário**, com banco externo compatível com TimescaleDB; não há implantação realizada nem capacidade aprovada.
+O [plano de preparação para produção](docs/preparacao-producao.md) detalha prioridades e critérios de aceite. A proposta é um **Render Cron diário**, com PostgreSQL do Supabase; não há implantação realizada nem capacidade aprovada.
 
 **A execução agendada ainda não está implementada:** o método `ETLWorker.run_once()` existe, mas o módulo previsto `app.run_once` ainda não foi criado. Ele precisará fechar conexões e retornar um código de saída que distinga falhas operacionais de rejeições persistidas. **Não agende `python -m app.main` como cron**, pois esse comando executa um loop contínuo. A automação de migrações no deploy também permanece pendente.
 

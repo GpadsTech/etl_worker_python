@@ -1,5 +1,5 @@
 -- Aplicar antes de iniciar a versão do worker que persiste rejeições.
--- Não requer TimescaleDB: rejeições são uma tabela PostgreSQL comum.
+-- Rejeições são uma tabela PostgreSQL comum.
 CREATE TABLE IF NOT EXISTS etl_rejections (
     source TEXT NOT NULL CHECK (source IN ('sensores', 'boias')),
     device_id TEXT NOT NULL,

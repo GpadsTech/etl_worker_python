@@ -4,6 +4,7 @@ Testes do normalize.py
 
 import unittest
 from datetime import datetime
+from app.transformer.timestamp import SOURCE_TIMEZONE
 
 from app.transformer.normalize import (
     normalize_sensor,
@@ -53,7 +54,7 @@ class TestNormalize(unittest.TestCase):
 
         self.assertEqual(
             sensor.timestamp,
-            datetime(2026, 4, 23, 14, 48, 35)
+            datetime(2026, 4, 23, 14, 48, 35, tzinfo=SOURCE_TIMEZONE)
         )
 
     def test_normalize_sensor_discards_metadata(self):
@@ -124,7 +125,7 @@ class TestNormalize(unittest.TestCase):
 
         self.assertEqual(
             buoy.timestamp,
-            datetime(2026, 7, 22, 18, 27, 46)
+            datetime(2026, 7, 22, 18, 27, 46, tzinfo=SOURCE_TIMEZONE)
         )
 
     def test_normalize_buoy_without_adc(self):

@@ -24,6 +24,9 @@ class TestWorkerLock(unittest.TestCase):
         self.connect = connect_patch.start()
         self.addCleanup(connect_patch.stop)
         self.database = DatabaseConnection()
+        session_patch = patch.object(DatabaseConnection, "_configure_session")
+        session_patch.start()
+        self.addCleanup(session_patch.stop)
 
     @staticmethod
     def session():

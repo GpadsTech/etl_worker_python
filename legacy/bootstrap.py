@@ -1,6 +1,6 @@
 """
 Importa todos os registros existentes
-do Firebase para o TimescaleDB.
+do Firebase para o PostgreSQL.
 """
 
 from app.firebase.client import FirebaseClient

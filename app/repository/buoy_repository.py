@@ -1,6 +1,6 @@
 """
 Repository responsável pela persistência de boias
-no PostgreSQL / TimescaleDB.
+no PostgreSQL.
 
 A política de conflito (histórico append-only) está documentada em
 ``app/repository/base.py``.
@@ -15,6 +15,7 @@ class BuoyRepository(BaseRepository):
     """
 
     table_name = "buoy_data"
+    conflict_columns = ("buoy_id", "firebase_id")
 
     columns = (
         "firebase_id",

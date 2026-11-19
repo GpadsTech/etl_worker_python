@@ -8,6 +8,7 @@ from app.database.connection import DatabaseConnection
 class BaseRepository:
 
     table_name = None
+    conflict_columns = ()
 
     def __init__(self):
 
@@ -34,7 +35,7 @@ class BaseRepository:
             VALUES
             ({placeholders})
 
-            ON CONFLICT(firebase_id, timestamp)
+            ON CONFLICT ({", ".join(self.conflict_columns)})
 
             DO NOTHING;
         """

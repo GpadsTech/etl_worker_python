@@ -1,5 +1,5 @@
 """
-Gerencia a conexão com o PostgreSQL / TimescaleDB.
+Gerencia a conexão com o PostgreSQL.
 """
 
 from contextlib import contextmanager
@@ -24,7 +24,7 @@ class WorkerLockLostError(ConnectionError):
 
 class DatabaseConnection:
     """
-    Gerencia a conexão com o PostgreSQL/TimescaleDB.
+    Gerencia a conexão com o PostgreSQL.
     """
 
     def __init__(self) -> None:
@@ -111,15 +111,35 @@ class DatabaseConnection:
 
         if self.connection is None or self.connection.closed:
 
-            self.connection = psycopg2.connect(
-                host=config.POSTGRES_HOST,
-                port=config.POSTGRES_PORT,
-                dbname=config.POSTGRES_DB,
-                user=config.POSTGRES_USER,
-                password=config.POSTGRES_PASSWORD,
-            )
+            candidate = psycopg2.connect(**config.database_parameters())
+            try:
+                self._configure_session(candidate)
+            except BaseException:
+                candidate.close()
+                raise
+            self.connection = candidate
 
         return self.connection
+
+    @staticmethod
+    def _configure_session(connection) -> None:
+        """Poolers podem sobrescrever opções de startup: configurar na sessão real."""
+        autocommit = connection.autocommit
+        try:
+            connection.autocommit = True
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_config('statement_timeout', %s, false), "
+                    "set_config('lock_timeout', %s, false), "
+                    "set_config('search_path', %s, false)",
+                    (
+                        str(config.POSTGRES_STATEMENT_TIMEOUT_MS),
+                        str(config.POSTGRES_LOCK_TIMEOUT_MS),
+                        f"{config.POSTGRES_SCHEMA},pg_catalog",
+                    ),
+                )
+        finally:
+            connection.autocommit = autocommit
 
     def commit(self) -> None:
         """

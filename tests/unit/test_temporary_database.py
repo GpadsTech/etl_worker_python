@@ -12,6 +12,9 @@ from tests.integration.temporary_database import (
 
 class TestTemporaryDatabase(unittest.TestCase):
     def setUp(self):
+        session_patch = patch.object(TemporaryDatabase, "_configure_session")
+        session_patch.start()
+        self.addCleanup(session_patch.stop)
         self.connection = MagicMock()
         self.connection.closed = False
         self.cursor = self.connection.cursor.return_value.__enter__.return_value
@@ -36,6 +39,12 @@ class TestTemporaryDatabase(unittest.TestCase):
             self.assertNotIn("DELETE", statement)
             self.assertNotIn("TRUNCATE", statement)
         self.connection.commit.assert_called_once()
+
+    def test_measurement_tables_use_device_and_reading_identity(self):
+        TemporaryDatabase().connect()
+        statements = [call.args[0] for call in self.cursor.execute.call_args_list]
+        self.assertIn("PRIMARY KEY (sensor_id, firebase_id)", statements[1])
+        self.assertIn("PRIMARY KEY (buoy_id, firebase_id)", statements[2])
 
     def test_reuses_session_without_recreating_tables_after_commit_or_rollback(self):
         database = TemporaryDatabase()
@@ -93,10 +102,13 @@ class TestTemporaryDatabase(unittest.TestCase):
         from tests.integration.test_idempotency import TestIdempotency
         from tests.integration.test_sensor_repository import TestSensorRepository
         from tests.integration.test_rejections import TestRejections
+        from tests.integration.test_device_identity import TestDeviceIdentity
+        from tests.integration.test_identity_migration import TestIdentityMigration
 
         for test_class in (
             TestBatchTransaction, TestBuoyRepository, TestETLBuoy, TestETLSensor,
             TestETLWorker, TestIdempotency, TestSensorRepository, TestRejections,
+            TestDeviceIdentity, TestIdentityMigration,
         ):
             with self.subTest(test_class=test_class.__name__):
                 self.assertTrue(issubclass(test_class, TemporaryDatabaseTestCase))
