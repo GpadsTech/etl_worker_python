@@ -11,6 +11,7 @@ Não consultam Firebase ou PostgreSQL e são a suíte padrão para desenvolvimen
 ```bash
 .venv/bin/python -m tests
 .venv/bin/python -m tests.runner tests.unit.test_timestamp
+.venv/bin/python -m tests.runner tests.unit.test_reconciliation
 .venv/bin/python -m unittest discover -s tests/unit -q
 ```
 
@@ -51,6 +52,10 @@ Python e remover essas variáveis ao terminar.
 
 Esses testes não carregam o histórico nas tabelas definitivas, nem comprovam
 capacidade, desempenho de índices, backups ou implantação do worker.
+
+O ensaio operacional de backup/restauração, delta e retorno é separado dessas
+suítes: seguir o [procedimento de reconciliação](ensaio-reconciliacao.md).
+Ele gera evidências privadas e usa um cluster descartável para restauração.
 
 ## Permissões: somente cluster descartável
 

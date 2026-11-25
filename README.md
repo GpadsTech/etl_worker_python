@@ -35,6 +35,9 @@ o [guia de testes](docs/TESTING.md) explica como validar o fluxo.
 A [ADR de hospedagem](docs/adr-hospedagem.md) registra a decisão pelo Render Cron
 e o Supabase já configurado. O worker ainda não foi implantado no Render.
 
+Para comparar os dados e ensaiar backup, retomada e retorno sem sobrescrever o
+destino, consultar o [procedimento de reconciliação](docs/ensaio-reconciliacao.md).
+
 ## 🏗️ Arquitetura e fluxo
 
 ```mermaid
