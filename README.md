@@ -4,7 +4,7 @@
 
 **Pipeline de ingestão e persistência de dados ambientais de sensores e boias IoT**
 
-![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.14.4%20validado-3776AB?logo=python&logoColor=white)
 ![Firebase](https://img.shields.io/badge/Firebase-Realtime%20Database-FFCA28?logo=firebase&logoColor=black)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white)
 
@@ -62,9 +62,11 @@ flowchart TD
 
 ### Funcionamento de um ciclo
 
-Ao executar `python -m app.main`, o serviço:
+Ao executar o worker com um perfil restrito (por exemplo,
+`ETL_ENV_FILE=.env.etl python -m app.main`), o serviço:
 
-1. Inicializa o logger e lê a configuração do arquivo `.env`.
+1. Carrega as variáveis do processo e o arquivo selecionado por `ETL_ENV_FILE`
+   (`.env` quando omitido), e inicializa o logger.
 2. Cria um `ETLWorker` com clientes e repositórios de persistência. Antes de cada ciclo, tenta adquirir a trava PostgreSQL; se estiver ocupada, pula o ciclo sem consultar o Firebase.
 3. Lista os equipamentos de `/sensores` com uma consulta rasa.
 4. Para cada equipamento, consulta `etl_checkpoint` e busca as chaves posteriores à última processada no nó `dados`. A consulta usa `start_at`, inclusivo, e descarta a leitura de fronteira.
@@ -125,6 +127,10 @@ etl_worker_python/
 │   │   ├── sensor.py                  # Modelo Sensor
 │   │   ├── buoy.py                    # Modelo Buoy
 │   │   └── rejection.py               # Leitura rejeitada e motivo
+│   ├── operations/
+│   │   ├── reconcile.py               # Conferência Firebase × PostgreSQL
+│   │   ├── backup.py                  # Backup de dados e restauração local protegida
+│   │   └── rehearse.py                # Ensaio isolado de delta, retomada e retorno
 │   ├── repository/
 │   │   ├── base.py                    # Inserção em lote e transações
 │   │   ├── checkpoint_repository.py   # Progresso por origem e equipamento
@@ -132,8 +138,9 @@ etl_worker_python/
 │   │   ├── sensor_repository.py       # INSERT de sensores (fluxo principal)
 │   │   └── buoy_repository.py         # INSERT de boias (fluxo principal)
 │   ├── sql/
-│   │   ├── migrations/                # Atualizações para bancos existentes
-│   │   └── schema.sql                 # Medições, índices, checkpoint e rejeições
+│   │   ├── migrations/                # Migrações versionadas 000–004
+│   │   ├── README.md                  # Aplicação das migrações e permissões
+│   │   └── schema.sql                 # Entrada psql que inclui as migrações
 │   ├── transformer/
 │   │   ├── mapper.py                  # Mapeamento de nomes dos campos
 │   │   ├── normalize.py               # Normalização das leituras
@@ -144,10 +151,15 @@ etl_worker_python/
 │   │   └── etl_worker.py              # Orquestração da ingestão
 │   ├── reprocess_rejections.py        # Comando manual de recuperação
 │   └── main.py                        # Entrada e loop contínuo
-├── docs/                               # Análises e preparação para produção
+├── docs/                               # Testes, hospedagem e procedimentos operacionais
 ├── legacy/                             # Bootstrap antigo, fora do fluxo principal
 ├── tests/                              # Testes unitários, integração e legado
 ├── .gitignore
+├── .env.example                        # Modelo administrativo local
+├── .env.etl.example                    # Modelo do ETL local
+├── .env.supabase.example               # Modelo administrativo Supabase
+├── .env.supabase.etl.example           # Modelo do ETL Supabase
+├── docker-compose.yml                  # PostgreSQL local; não hospeda o worker
 ├── README.md
 └── requirements.txt
 ```
@@ -223,11 +235,18 @@ O código que gera as chaves nos dispositivos não está neste repositório. É 
 
 ### 1. Pré-requisitos
 
-- Python compatível com as dependências do projeto (recomenda-se começar com **Python 3.12**).
+- Python compatível com as dependências do projeto. A execução e os testes foram
+  validados com **Python 3.14.4**; outras versões exigem validação de instalação
+  e testes antes de uso.
 - Git.
 - Banco PostgreSQL, local ou no Supabase, sem extensões adicionais.
 - Projeto Firebase Realtime Database acessível.
 - Uma **chave de conta de serviço** com as permissões adequadas, fornecida de forma segura pela equipe responsável.
+- Base de fusos IANA disponível para `America/Sao_Paulo`. Em sistemas sem essa
+  base, como algumas instalações Windows, instalar `tzdata` no ambiente virtual.
+- Docker com Compose para o banco local, se escolhido. As ferramentas de backup
+  e ensaio operacional requerem **Linux com Docker**, incluindo rede host e
+  permissão para usar o daemon. Não pressupor suporte nativo delas no Windows/macOS.
 
 > Não inclua o JSON de credenciais em commits, mensagens, prints ou arquivos públicos.
 
@@ -238,19 +257,22 @@ git clone https://github.com/GpadsTech/etl_worker_python.git
 cd etl_worker_python
 ```
 
+Se estiver validando uma branch ainda não integrada à principal, selecione-a antes
+dos próximos passos.
+
 ### 3. Crie e ative um ambiente virtual
 
 **Windows — Git Bash:**
 
 ```bash
-py -3.12 -m venv .venv
+py -m venv .venv
 source .venv/Scripts/activate
 ```
 
 **Windows — PowerShell:**
 
 ```powershell
-py -3.12 -m venv .venv
+py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
@@ -266,6 +288,12 @@ source .venv/bin/activate
 ```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+Confira a versão com `python --version`. Se a base IANA não estiver disponível:
+
+```bash
+python -m pip install tzdata
 ```
 
 ### 5. Configure as variáveis de ambiente
@@ -288,14 +316,15 @@ administrativo para executar o worker nem substituir arquivos já preenchidos.
 `ETL_ENV_FILE` é informado no comando de execução, não dentro do arquivo escolhido.
 
 ```dotenv
+# Exemplo administrativo local; o worker deve usar outro perfil, restrito.
 FIREBASE_DATABASE_URL=https://SEU-PROJETO-default-rtdb.firebaseio.com
-FIREBASE_CREDENTIALS=app/firebase/credentials/firebase_key.json
+FIREBASE_CREDENTIALS=/caminho/absoluto/para/firebase-credentials.json
 
 POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
+POSTGRES_PORT=5433
 POSTGRES_DB=moringa
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=SUA_SENHA_LOCAL
+POSTGRES_USER=etl_local
+POSTGRES_PASSWORD=troque-esta-senha-local
 POSTGRES_SCHEMA=etl_private
 POSTGRES_SSLMODE=disable
 POSTGRES_SSLROOTCERT=
@@ -333,10 +362,17 @@ explicitamente na sessão após conectar, pois o pooler pode sobrescrever opçõ
 de startup; reconexões reaplicam a configuração e não ocorrem durante uma trava
 perdida. Valores inválidos são recusados sem imprimir credenciais.
 
-O caminho da credencial acima é **um exemplo local** compatível com a forma como `FirebaseClient` resolve o arquivo. Crie as pastas necessárias e coloque o JSON fora do versionamento. O `.gitignore` já possui regras para configurações privadas e diretórios de credenciais, incluindo:
+`FIREBASE_CREDENTIALS` aceita caminho absoluto ou relativo à **raiz do repositório**.
+O caminho acima é ilustrativo: use a localização real do JSON e mantenha-o fora
+do versionamento. O `.gitignore` protege arquivos privados, incluindo:
 
 ```gitignore
 .env
+.env.*
+!.env.example
+!.env.etl.example
+!.env.supabase.example
+!.env.supabase.etl.example
 .venv/
 __pycache__/
 *.pyc
@@ -350,8 +386,8 @@ __pycache__/
 #### Banco local com Docker Compose
 
 O `docker-compose.yml` usa PostgreSQL **18.7**, com usuário, senha, banco e porta
-do `.env` existente. Na configuração local atual, o worker continua acessando
-`localhost:5433`; a porta interna do container é `5432`.
+do `.env`. Usando `.env.example`, a porta no host é `5433`; a porta interna do
+container é `5432`. O Compose não inicializa uma instância Supabase nem executa o worker.
 
 Pare o banco anterior se ele ocupar a mesma porta e execute:
 
@@ -375,23 +411,33 @@ docker compose down
 
 #### Banco sem Docker ou já existente
 
-Para banco novo ou existente, execute a entrada `psql`, que aplica as migrações
-000 → 001 → 002 → 003 → 004 em ordem e interrompe em caso de erro:
+Execute a entrada `psql`: em banco novo, aplica 000 → 001 → 002 → 003 → 004;
+quando as tabelas já estão em `etl_private`, executa somente 003/004.
+Interrompe em caso de erro. O exemplo abaixo segue o perfil administrativo local
+de `.env.example`:
 
 ```bash
-psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/schema.sql
+psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/schema.sql
 ```
 
-Adapte host, usuário e nome do banco conforme seu `.env`. O usuário de migração precisa ser dono das tabelas e poder criar schema/roles (`CREATEROLE`). Não use essa credencial administrativa no worker. PostgreSQL puro é o único destino suportado.
+Adapte host, porta, usuário e banco conforme o destino. **O `psql` não lê `.env`
+nem `ETL_ENV_FILE` automaticamente**: informe seus parâmetros de conexão e senha
+de forma segura. O usuário de migração deve ser dono das tabelas e poder criar
+schema/roles (`CREATEROLE`). Não use essa credencial administrativa no worker.
+PostgreSQL puro é o único destino suportado.
 
 **Banco já existente:** com o ETL parado, valide e aplique as migrações em ordem no ambiente de teste. A 002 exige tabelas comuns, sem particionamento/herança, e aborta diante de duplicidades por equipamento/ID, sem apagar dados. Estruturas antigas gerenciadas por extensão precisam ser transferidas para tabelas comuns; não há conversão automática nem exclusão de dados. Não inicie o worker atualizado antes de atualizar as chaves. Em produção, faça backup e valide em homologação.
 
+Como alternativa, aplicar arquivos individualmente, **somente os pendentes**.
+A sequência completa abaixo serve para uma base que ainda não recebeu 003;
+não executá-la integralmente depois da transferência para o schema privado:
+
 ```bash
-psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/000_initial_schema.sql
-psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/001_etl_rejections.sql
-psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/002_device_reading_identity.sql
-psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/003_private_access.sql
-psql -h localhost -U postgres -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/004_measurement_timestamptz.sql
+psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/000_initial_schema.sql
+psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/001_etl_rejections.sql
+psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/002_device_reading_identity.sql
+psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/003_private_access.sql
+psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/004_measurement_timestamptz.sql
 ```
 
 Os comandos individuais acima são alternativa ao `schema.sql`, não uma etapa
@@ -411,7 +457,10 @@ A 003 move sensores, boias, checkpoints e rejeições para `etl_private`.
 As roles `etl_writer` e `ai_reader` são grupos sem login nem senha:
 ETL insere/consulta medições e atualiza seu estado; IA só consulta medições.
 Nenhum usuário é associado automaticamente. Provisionar a credencial restrita
-do worker separadamente; manter a IA sem login até existir um consumidor.
+do worker separadamente, conforme o [guia SQL](app/sql/README.md); manter a IA
+sem login até existir um consumidor. Criar `.env.etl` com base no modelo não
+cria o login `etl_runtime`: provisioná-lo antes de executar o worker. O usuário
+inicializado pelo Compose é administrativo, mesmo que seu nome seja `etl_local`.
 
 **Não expor `etl_private` pela Data API.** A migração revoga acesso de `PUBLIC`
 e das roles de API existentes (`anon`, `authenticated`, `service_role`).
@@ -447,11 +496,27 @@ tabelas temporárias e não carregam o histórico nas tabelas definitivas.
 
 ### 7. Execute o ETL
 
-Na raiz do projeto, com o ambiente virtual ativo:
+Na raiz do projeto, com o ambiente virtual ativo, selecionar explicitamente
+o perfil restrito. Em Linux/macOS ou Git Bash:
 
 ```bash
+# PostgreSQL local:
+ETL_ENV_FILE=.env.etl python -m app.main
+
+# OU Supabase:
+ETL_ENV_FILE=.env.supabase.etl python -m app.main
+```
+
+No PowerShell:
+
+```powershell
+$env:ETL_ENV_FILE = ".env.etl" # Ou ".env.supabase.etl".
 python -m app.main
 ```
+
+Não executar os dois destinos simultaneamente para o mesmo fluxo.
+Sem `ETL_ENV_FILE`, o código usa `.env`, reservado aqui à administração:
+não é o perfil recomendado para o worker.
 
 O worker executa ciclos continuamente até ser interrompido. Para encerrar com segurança, pressione **Ctrl+C**. O fluxo principal fecha a conexão com o banco ao finalizar.
 
@@ -469,19 +534,26 @@ Esses contadores não substituem o diagnóstico operacional: falhas ao salvar re
 Para conferir no PostgreSQL:
 
 ```sql
-SELECT COUNT(*) FROM sensor_data;
-SELECT COUNT(*) FROM buoy_data;
+SELECT COUNT(*) FROM etl_private.sensor_data;
+SELECT COUNT(*) FROM etl_private.buoy_data;
 
-SELECT sensor_id, timestamp, temperatura, umidade
-FROM sensor_data
+SELECT sensor_id, timestamp,
+       timestamp AT TIME ZONE 'America/Sao_Paulo' AS hora_brasilia,
+       temperatura, umidade
+FROM etl_private.sensor_data
 ORDER BY timestamp DESC
 LIMIT 10;
 
-SELECT buoy_id, timestamp, ph, turbidez_v
-FROM buoy_data
+SELECT buoy_id, timestamp,
+       timestamp AT TIME ZONE 'America/Sao_Paulo' AS hora_brasilia,
+       ph, turbidez_v
+FROM etl_private.buoy_data
 ORDER BY timestamp DESC
 LIMIT 10;
 ```
+
+Os nomes estão qualificados com `etl_private` para funcionar em clientes como
+DBeaver/psql sem depender do schema padrão configurado pelo worker.
 
 ### 9. Reprocessamento opcional de rejeições
 
@@ -490,12 +562,17 @@ O fluxo esperado é somente extração e classificação, sem alterações manua
 Se precisar utilizá-lo, use um ambiente configurado para o banco correto. O comando disputa a mesma trava da ingestão; se ela estiver ocupada, não inicia. Para uma janela de manutenção previsível, pare o worker antes de executar a recuperação.
 
 ```bash
+# Selecionar explicitamente o mesmo perfil restrito do worker.
+# Nos exemplos, Supabase; trocar por .env.etl para o banco local.
 # Após corrigir o normalizador: usa o payload salvo, sem consultar Firebase.
-python -m app.reprocess_rejections --limit 100
+ETL_ENV_FILE=.env.supabase.etl python -m app.reprocess_rejections --limit 100
 
 # Após corrigir a leitura no Firebase: relê o registro pela chave exata.
-python -m app.reprocess_rejections --source sensores --device-id EST001 --limit 50 --refresh-from-firebase
+ETL_ENV_FILE=.env.supabase.etl python -m app.reprocess_rejections --source sensores --device-id EST001 --limit 50 --refresh-from-firebase
 ```
+
+No PowerShell, definir `$env:ETL_ENV_FILE` antes do comando Python, como na
+execução principal.
 
 Cada comando processa **um lote** de rejeições pendentes, priorizando as tentativas mais antigas. Não existe reprocessamento automático das rejeições no loop principal nem edição automática de payloads. Falhas operacionais da ingestão podem causar releitura no ciclo seguinte, pois impedem o avanço do checkpoint. `--source` e `--device-id` são filtros opcionais.
 
@@ -529,10 +606,19 @@ python -m unittest tests.unit.test_etl_worker
 As integrações são puladas por padrão e exigem autorização explícita:
 
 ```bash
-RUN_INTEGRATION=1 python -m tests.runner integration
+# Local:
+ETL_ENV_FILE=.env.etl RUN_INTEGRATION=1 python -m tests.runner integration
+
+# OU Supabase:
+ETL_ENV_FILE=.env.supabase.etl RUN_INTEGRATION=1 python -m tests.runner integration
 ```
 
-No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a variável ao terminar. Use somente credenciais e banco de teste. Os testes comuns de escrita SQL usam tabelas temporárias por sessão; isso não valida desempenho dos índices. A suíte de permissões exige autorização extra e cluster descartável, pois cria roles e objetos permanentes. Consulte [TESTING.md](docs/TESTING.md) para detalhes.
+No PowerShell, defina `$env:ETL_ENV_FILE` com o perfil escolhido e
+`$env:RUN_INTEGRATION = "1"` antes do comando; remova as variáveis ao terminar.
+Use somente credenciais e banco de teste. Os testes comuns de escrita SQL usam
+tabelas temporárias por sessão; isso não valida desempenho dos índices.
+A suíte de permissões exige autorização extra e cluster descartável, pois cria
+roles e objetos permanentes. Consulte [TESTING.md](docs/TESTING.md) para detalhes.
 
 ## 🔧 Diagnóstico de problemas
 
@@ -564,16 +650,44 @@ No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a v
 - Proteção contra duplicatas via `ON CONFLICT DO NOTHING`.
 - Logs e contadores por ciclo.
 - Tratamento de falhas por registro.
+- PostgreSQL puro, migrações versionadas 000–004 e tabelas privadas em `etl_private`.
+- Login restrito do ETL e role de leitura de medições para uma futura aplicação de IA.
+- TLS com validação de certificado/hostname, timeouts e schema configurados na sessão.
+- Datas com fuso de origem `America/Sao_Paulo` e medições em `TIMESTAMPTZ`.
+
+### Ferramentas operacionais e validações concluídas
+
+- Carga permanente de 9.293 medições no Supabase e avanço dos três checkpoints.
+- Integração com Firebase e PostgreSQL local/Supabase, usando credencial restrita.
+- Comparação por chave e por todos os valores persistidos, incluindo contagens
+  por equipamento/dia, extremos de horário, nulos e amostras.
+- Backup somente de dados e restauração com conferência das quatro tabelas.
+- Ensaio em banco descartável de delta controlado, retomada, releitura sem
+  duplicação, bloqueio de outro processo e retorno a partir do backup.
+
+Essas ferramentas são executadas explicitamente e não fazem parte do loop normal.
+As validações se referem ao recorte registrado na execução, não a uma garantia
+de capacidade ou recuperação de produção. Procedimento e limites no
+[guia de reconciliação](docs/ensaio-reconciliacao.md).
 
 ### Pontos que ainda exigem atenção
 
 - **Listener em tempo real:** `listener.py` ainda não implementa a escuta efetiva.
 - **Carga inicial e backlog:** a leitura Firebase ainda não é paginada; todo o resultado por equipamento pode ficar em memória.
 - **Integridade:** falta confirmar o contrato das chaves com o firmware e definir reconciliação para chaves atrasadas; rejeições anteriores à nova tabela não são recuperadas automaticamente.
-- **Concorrência:** a trava está implementada e coberta por testes offline; falta validar disputa entre processos, encerramento abrupto e o modo de conexão no ambiente de homologação.
+- **Concorrência:** sessões no Supabase e disputa entre processos no ensaio
+  descartável já foram validadas. Ensaiar também encerramento abrupto e retomada
+  no ambiente definitivo; a trava não coordena bancos diferentes.
 - **Atualização de leituras:** o mecanismo de conflito não atualiza registros existentes.
-- **Operação:** faltam tratamento explícito de SIGTERM, timeouts, recuperação robusta de conexão e alertas de ausência de sucesso.
-- **Deploy e segurança:** containerização, CI, validação de TLS, gestão de segredos e restauração de backups precisam ser preparados e testados.
+- **Operação:** faltam tratamento explícito de SIGTERM, limites de espera nas
+  chamadas Firebase, tentativas limitadas com espera progressiva e alertas de
+  ausência de sucesso. Os timeouts PostgreSQL já estão implementados e validados.
+- **Deploy:** faltam Dockerfile do worker, CI/CD e provisão do job no Render.
+  O Compose existente atende ao banco local; não é a implantação do worker.
+- **Segurança e recuperação contínua:** transportar os segredos e a CA com
+  segurança para o ambiente definitivo, definir backups duráveis/retenção e
+  ensaiar restauração e operação nesse ambiente. TLS e restauração lógica já
+  foram validados, mas não substituem esse preparo operacional.
 
 A [ADR de hospedagem](docs/adr-hospedagem.md) registra o **Render Cron diário**
 e o PostgreSQL do Supabase aprovado e configurado. A implantação do worker no
