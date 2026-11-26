@@ -12,7 +12,7 @@ import uuid
 
 from dotenv import dotenv_values, set_key
 
-from app.config.config import config
+from app.config.config import ENV_FILE, config
 from app.database.connection import DatabaseConnection, WorkerAlreadyRunningError
 from app.operations.backup import LOOPBACK
 from app.operations.reconcile import (
@@ -83,8 +83,7 @@ class SnapshotSource:
 def child(env_file, module, *arguments):
     environment = {
         key: value for key, value in os.environ.items()
-        if not key.startswith(("POSTGRES_", "FIREBASE_"))
-        and key not in ("ETL_ENV_FILE", "ETL_INTERVAL_SECONDS")
+        if not key.startswith(("POSTGRES_", "FIREBASE_", "ETL_"))
     }
     environment["ETL_ENV_FILE"] = str(Path(env_file).resolve())
     result = subprocess.run(
@@ -127,7 +126,7 @@ def actor(args):
         if args.action == "lock-test":
             with worker.database.exclusive():
                 child(
-                    os.environ["ETL_ENV_FILE"], "app.operations.rehearse", "actor",
+                    ENV_FILE, "app.operations.rehearse", "actor",
                     "--snapshot", args.snapshot, "--action", "probe", "--output", args.output,
                 )
             result = json.loads(Path(args.output).read_text())

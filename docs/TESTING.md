@@ -17,22 +17,23 @@ Não consultam Firebase ou PostgreSQL e são a suíte padrão para desenvolvimen
 
 ## Integração autorizada
 
-Requer credenciais válidas e `RUN_INTEGRATION=1`. O arquivo escolhido por
-`ETL_ENV_FILE` é privado; variáveis já exportadas prevalecem sobre seu conteúdo.
+Requer credenciais válidas e `RUN_INTEGRATION=1`. Usa automaticamente o `.env`
+da raiz (Supabase restrito). Variáveis já exportadas prevalecem sobre seu conteúdo.
 
 ```bash
-# PostgreSQL local, com login restrito:
-ETL_ENV_FILE=.env.etl RUN_INTEGRATION=1 .venv/bin/python -m tests.runner integration
+# Supabase configurado no .env, com login restrito:
+RUN_INTEGRATION=1 .venv/bin/python -m tests.runner integration
 
-# Supabase, com login restrito:
-ETL_ENV_FILE=.env.supabase.etl RUN_INTEGRATION=1 .venv/bin/python -m tests.runner integration
+# Alternativa local, com acesso restrito em arquivo ignorado pelo Git:
+ETL_ENV_FILE=config-private/local-etl.env RUN_INTEGRATION=1 .venv/bin/python -m tests.runner integration
 
 # Apenas um módulo:
-ETL_ENV_FILE=.env.etl RUN_INTEGRATION=1 .venv/bin/python -m tests.runner tests.integration.test_timestamp_migration
+RUN_INTEGRATION=1 .venv/bin/python -m tests.runner tests.integration.test_timestamp_migration
 ```
 
-No PowerShell, definir `$env:ETL_ENV_FILE` e `$env:RUN_INTEGRATION` antes do comando
-Python e remover essas variáveis ao terminar.
+No PowerShell, definir `$env:RUN_INTEGRATION = "1"` antes do comando e remover
+essa variável ao terminar. `ETL_ENV_FILE` só é necessário para selecionar outro
+destino de teste; limpar também seleções antigas de ambiente.
 
 ### Isolamento e limites
 

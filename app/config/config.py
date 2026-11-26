@@ -7,10 +7,24 @@ import os
 import re
 from pathlib import Path
 
-env_file = os.getenv("ETL_ENV_FILE")
-if env_file and not Path(env_file).is_file():
-    raise ValueError("ETL_ENV_FILE deve indicar um arquivo existente.")
-load_dotenv(dotenv_path=env_file or None)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_environment(root=PROJECT_ROOT):
+    """Usa o .env da raiz; arquivo externo é opção de manutenção/testes."""
+    selected = os.getenv("ETL_ENV_FILE")
+    path = Path(selected).expanduser() if selected else Path(".env")
+    if not path.is_absolute():
+        path = root / path
+    path = path.resolve()
+    if (selected or path.exists()) and not path.is_file():
+        raise ValueError("ETL_ENV_FILE deve indicar um arquivo existente.")
+    # Segredos injetados pelo processo/deploy sempre têm precedência.
+    load_dotenv(dotenv_path=path, override=False)
+    return path
+
+
+ENV_FILE = load_environment()
 
 
 class Config:

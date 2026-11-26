@@ -79,11 +79,10 @@ Configurar `POSTGRES_USER`/`POSTGRES_PASSWORD` com essa credencial e
 `POSTGRES_SCHEMA=etl_private`. Não associar o worker a uma role proprietária,
 administrativa ou à `ai_reader`.
 
-Para manter o `.env` administrativo local separado, guardar a configuração do
-worker em `.env.etl` (permissão `0600`, ignorado pelo Git) e executar
-`ETL_ENV_FILE=.env.etl .venv/bin/python -m app.main`. Não trocar as credenciais
-de inicialização do Docker pelas da role restrita. Variáveis exportadas pelo
-processo prevalecem sobre o arquivo selecionado.
+O `.env` único da aplicação usa somente a credencial restrita do worker
+(permissão `0600`, ignorado pelo Git). Executar `python -m app.main`.
+Credenciais administrativas ficam em `config-private/`, fora do Git, e nunca substituem as
+da coleta. Variáveis exportadas pelo processo prevalecem sobre o arquivo.
 
 Não criar credencial da IA agora. Quando existir uma aplicação consumidora,
 provisionar login dedicado e conceder apenas `ai_reader`, sem outras memberships.
@@ -91,16 +90,19 @@ No Supabase, usar host/porta/identificação de usuário próprios do endpoint e
 validar o formato do login no painel, sem supor que o nome isolado basta no pooler.
 
 No pooler compartilhado, o login provisionado usa `etl_runtime.<project-ref>`.
-As configurações privadas do projeto ficam em `.env.supabase` (administração)
-e `.env.supabase.etl` (worker). Para iniciar a ingestão:
+O Supabase é o destino do `.env` padrão. Para iniciar a ingestão:
 
 ```bash
-ETL_ENV_FILE=.env.supabase.etl .venv/bin/python -m app.main
+python -m app.main
 ```
 
 Usar `verify-full`, CA do projeto e porta de sessão. A conexão aplica schema e
 timeouts explicitamente após abrir a sessão para evitar valores sobrescritos
-pelo pooler. Nenhum desses arquivos privados deve ser versionado.
+pelo pooler. O `.env` e os arquivos reais de `config-private/` não devem ser
+versionados; somente os modelos `.env.example` podem entrar no Git.
+Manutenção pode selecionar `ETL_ENV_FILE=config-private/supabase-admin.env`;
+isso não combina o arquivo administrativo com o `.env` da coleta.
+Detalhes: [configuração única](../../docs/configuracao.md).
 
 ## Data API
 

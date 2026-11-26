@@ -67,10 +67,10 @@ Substituir os placeholders por push IDs reais, entre aspas.
 
 ### 1. Leitura antiga ausente do banco (backfill)
 
-Com o login restrito do ETL:
+Com o login restrito do `.env` padrão:
 
 ```bash
-ETL_ENV_FILE=.env.supabase.etl python -m app.reprocess_history backfill \
+python -m app.reprocess_history backfill \
   --source boias --device-id BOIA001 --start 'ID_INICIAL' --end 'ID_FINAL'
 ```
 
@@ -91,10 +91,11 @@ Ingestão normal e backfill mantêm a **primeira versão**. Para substituí-la:
 
 1. Aplicar a migração `005_historical_corrections.sql` com o administrador.
 2. Fazer backup administrativo incluindo a auditoria, revisar a mudança e motivo.
-3. Executar prévia (padrão, sem `--apply`) com perfil administrativo:
+3. Executar prévia (padrão, sem `--apply`) com arquivo administrativo em
+   **`config-private/`, fora do Git**, sem alterar o `.env` restrito da coleta:
 
 ```bash
-ETL_ENV_FILE=.env.supabase python -m app.reprocess_history correct \
+ETL_ENV_FILE=config-private/supabase-admin.env python -m app.reprocess_history correct \
   --source boias --device-id BOIA001 --key 'ID_DA_LEITURA' \
   --reason 'Motivo aprovado da correção'
 ```
@@ -102,7 +103,7 @@ ETL_ENV_FILE=.env.supabase python -m app.reprocess_history correct \
 4. Revisar os valores na origem/banco e os hashes retornados. Aplicar:
 
 ```bash
-ETL_ENV_FILE=.env.supabase python -m app.reprocess_history correct \
+ETL_ENV_FILE=config-private/supabase-admin.env python -m app.reprocess_history correct \
   --source boias --device-id BOIA001 --key 'ID_DA_LEITURA' \
   --reason 'Motivo aprovado da correção' --apply \
   --expected-hash 'BEFORE_SHA256_DA_PREVIA' \

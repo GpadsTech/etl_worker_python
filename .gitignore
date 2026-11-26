@@ -12,9 +12,10 @@ htmlcov/
 .env
 .env.*
 !.env.example
-!.env.etl.example
-!.env.supabase.example
-!.env.supabase.etl.example
+/config-private/*
+!/config-private/supabase-admin.env.example
+!/config-private/local-admin.env.example
+!/config-private/local-etl.env.example
 # Credenciais, chaves e anexos locais
 credentials/
 **/credentials/

@@ -62,11 +62,10 @@ flowchart TD
 
 ### Funcionamento de um ciclo
 
-Ao executar o worker com um perfil restrito (por exemplo,
-`ETL_ENV_FILE=.env.etl python -m app.main`), o serviço:
+Ao executar `python -m app.main`, com o `.env` restrito configurado, o serviço:
 
-1. Carrega as variáveis do processo e o arquivo selecionado por `ETL_ENV_FILE`
-   (`.env` quando omitido), e inicializa o logger.
+1. Carrega as variáveis do processo e o `.env` da raiz do projeto, e inicializa
+   o logger. Arquivos externos são uma opção explícita de manutenção/testes.
 2. Cria um `ETLWorker` com clientes e repositórios de persistência. Antes de cada ciclo, tenta adquirir a trava PostgreSQL; se estiver ocupada, pula o ciclo sem consultar o Firebase.
 3. Lista os equipamentos de `/sensores` com uma consulta rasa.
 4. Para cada equipamento, lê `etl_checkpoint`, fixa a maior chave do ciclo e reconsulta uma janela de chaves anteriores, classificando apenas IDs desconhecidos.
@@ -120,6 +119,7 @@ etl_worker_python/
 │   │   └── buoy_repository.py         # Implementação alternativa/legada
 │   ├── firebase/
 │   │   ├── client.py                  # Firebase Admin e referências RTDB
+│   │   ├── pagination.py              # Busca limitada e janela de atraso
 │   │   ├── paths.py                   # Caminhos dos nós no Firebase
 │   │   └── readers/
 │   │       └── listener.py            # Listener ainda não implementado
@@ -150,15 +150,14 @@ etl_worker_python/
 │   ├── worker/
 │   │   └── etl_worker.py              # Orquestração da ingestão
 │   ├── reprocess_rejections.py        # Comando manual de recuperação
+│   ├── reprocess_history.py           # Recuperação e correção histórica explícitas
 │   └── main.py                        # Entrada e loop contínuo
 ├── docs/                               # Testes, hospedagem e procedimentos operacionais
 ├── legacy/                             # Bootstrap antigo, fora do fluxo principal
 ├── tests/                              # Testes unitários, integração e legado
 ├── .gitignore
-├── .env.example                        # Modelo administrativo local
-├── .env.etl.example                    # Modelo do ETL local
-├── .env.supabase.example               # Modelo administrativo Supabase
-├── .env.supabase.etl.example           # Modelo do ETL Supabase
+├── .env.example                        # Modelo único da aplicação (Supabase restrito)
+├── config-private/                     # Perfis opcionais; só os .example entram no Git
 ├── docker-compose.yml                  # PostgreSQL local; não hospeda o worker
 ├── README.md
 └── requirements.txt
@@ -221,13 +220,14 @@ O SQL em `app/sql/schema.sql` cria:
 - **`buoy_data`**: medições de boias, incluindo pH, turbidez, tensão e outras grandezas.
 - **`etl_checkpoint`**: última chave processada por `(source, device_id)`, com data de atualização.
 - **`etl_rejections`**: payload JSON, motivo, tentativas e datas de criação, última tentativa e resolução por `(source, device_id, firebase_id)`.
+- **`etl_corrections`**: histórico administrativo de correções aceitas, com antes/depois e motivo; criado pela migração 005.
 
 As duas tabelas de medições são tabelas PostgreSQL comuns e possuem índices
 para consultas por tempo e equipamento.
 
-As chaves são `(sensor_id, firebase_id)` e `(buoy_id, firebase_id)`, com `ON CONFLICT DO NOTHING`. O reprocessamento não duplica a leitura, mesmo se o horário mudar. IDs distintos no mesmo horário e IDs iguais em equipamentos diferentes são preservados. **Atenção:** a primeira versão recebida é mantida; alterações no Firebase não atualizam a linha.
+As chaves são `(sensor_id, firebase_id)` e `(buoy_id, firebase_id)`, com `ON CONFLICT DO NOTHING`. O reprocessamento não duplica a leitura, mesmo se o horário mudar. IDs distintos no mesmo horário e IDs iguais em equipamentos diferentes são preservados. **Atenção:** a coleta mantém a primeira versão recebida; alterações no Firebase só substituem uma medição aceita pelo comando administrativo explícito de correção.
 
-Se os dados forem commitados, mas a gravação do checkpoint falhar, o próximo ciclo poderá relê-los com segurança quanto a duplicatas. A estratégia incremental depende da ordenação das chaves: novas leituras inseridas com chave anterior ao checkpoint não são buscadas automaticamente. Checkpoints não substituem backup nem uma política de reconciliação.
+Se os dados forem commitados, mas a gravação do checkpoint falhar, o próximo ciclo poderá relê-los com segurança quanto a duplicatas. Leituras novas com chave anterior ao checkpoint são procuradas dentro da janela configurada; fora dela exigem recuperação explícita. Checkpoints não substituem backup nem conferência periódica.
 
 O código que gera as chaves nos dispositivos não está neste repositório. É necessário confirmar com a equipe de firmware a ordenação, o comportamento offline e a possibilidade de inserções atrasadas antes de aprovar essa garantia em produção.
 
@@ -298,41 +298,37 @@ python -m pip install tzdata
 
 ### 5. Configure as variáveis de ambiente
 
-Use `.env.example` como modelo para o `.env` na raiz do projeto; não sobrescreva
-um `.env` existente com credenciais reais.
+Use [`.env.example`](.env.example) como modelo para **um único `.env` na raiz**.
+O destino atual é o Supabase, com usuário restrito. Não sobrescreva um `.env`
+preenchido nem coloque credenciais administrativas nele. Proteger com permissão
+`0600` em Linux/macOS.
 
-Os modelos versionados estão separados por perfil:
-
-| Modelo | Arquivo privado | Uso |
-| --- | --- | --- |
-| [`.env.example`](.env.example) | `.env` | Inicialização/administração do PostgreSQL local |
-| [`.env.etl.example`](.env.etl.example) | `.env.etl` | Worker local com login restrito |
-| [`.env.supabase.example`](.env.supabase.example) | `.env.supabase` | Administração e migrações no Supabase |
-| [`.env.supabase.etl.example`](.env.supabase.etl.example) | `.env.supabase.etl` | Worker com login restrito no Supabase |
-
-Copiar apenas os modelos necessários, preencher os placeholders e proteger os
-arquivos privados com permissão `0600` em Linux/macOS. Não usar o perfil
-administrativo para executar o worker nem substituir arquivos já preenchidos.
-`ETL_ENV_FILE` é informado no comando de execução, não dentro do arquivo escolhido.
+O programa usa esse arquivo automaticamente. Os antigos `.env.etl`,
+`.env.supabase` e `.env.supabase.etl` não são necessários no projeto.
+Administração e testes podem selecionar um arquivo de `config-private/`, sem misturá-lo ao
+arquivo da coleta. Detalhes e recuperação dos perfis antigos:
+[configuração única](docs/configuracao.md).
 
 ```dotenv
-# Exemplo administrativo local; o worker deve usar outro perfil, restrito.
+# Configuração da aplicação; não usar usuário administrativo.
 FIREBASE_DATABASE_URL=https://SEU-PROJETO-default-rtdb.firebaseio.com
 FIREBASE_CREDENTIALS=/caminho/absoluto/para/firebase-credentials.json
 
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5433
-POSTGRES_DB=moringa
-POSTGRES_USER=etl_local
-POSTGRES_PASSWORD=troque-esta-senha-local
+POSTGRES_HOST=aws-0-SUA-REGIAO.pooler.supabase.com
+POSTGRES_PORT=5432
+POSTGRES_DB=postgres
+POSTGRES_USER=etl_runtime.SEU_PROJECT_REF
+POSTGRES_PASSWORD=PREENCHA_A_SENHA_DO_ETL_SUPABASE
 POSTGRES_SCHEMA=etl_private
-POSTGRES_SSLMODE=disable
-POSTGRES_SSLROOTCERT=
+POSTGRES_SSLMODE=verify-full
+POSTGRES_SSLROOTCERT=/caminho/absoluto/para/ca-supabase.crt
 POSTGRES_CONNECT_TIMEOUT=10
 POSTGRES_STATEMENT_TIMEOUT_MS=60000
 POSTGRES_LOCK_TIMEOUT_MS=5000
 
 ETL_INTERVAL_SECONDS=60
+ETL_PAGE_SIZE=500
+ETL_LOOKBACK_RECORDS=1000
 ```
 
 | Variável | Descrição |
@@ -351,7 +347,9 @@ ETL_INTERVAL_SECONDS=60
 | `POSTGRES_STATEMENT_TIMEOUT_MS` | Duração máxima por comando SQL; padrão `60000` ms; `0` desativa |
 | `POSTGRES_LOCK_TIMEOUT_MS` | Espera máxima por lock SQL; padrão `5000` ms; `0` desativa |
 | `ETL_INTERVAL_SECONDS` | Intervalo entre ciclos; padrão `60` segundos |
-| `ETL_ENV_FILE` | Arquivo de configuração alternativo, informado no ambiente do processo; omitido mantém `.env` |
+| `ETL_PAGE_SIZE` | Leituras por grupo; padrão `500`, entre 1 e 10.000 |
+| `ETL_LOOKBACK_RECORDS` | Últimas N chaves até o checkpoint; padrão `1000`, entre 0 e 10.000; 0 desativa |
+| `ETL_ENV_FILE` | Opcional para manutenção/testes; exemplo: `config-private/supabase-admin.env`; omitido usa apenas o `.env` da raiz |
 
 **Supabase:** use os valores de host, porta, banco e usuário fornecidos pelo painel.
 Escolha conexão direta ou pooler **session**, nunca transaction por causa da trava
@@ -370,9 +368,10 @@ do versionamento. O `.gitignore` protege arquivos privados, incluindo:
 .env
 .env.*
 !.env.example
-!.env.etl.example
-!.env.supabase.example
-!.env.supabase.etl.example
+/config-private/*
+!/config-private/supabase-admin.env.example
+!/config-private/local-admin.env.example
+!/config-private/local-etl.env.example
 .venv/
 __pycache__/
 *.pyc
@@ -385,11 +384,15 @@ __pycache__/
 
 #### Banco local com Docker Compose
 
-O `docker-compose.yml` usa PostgreSQL **18.7**, com usuário, senha, banco e porta
-do `.env`. Usando `.env.example`, a porta no host é `5433`; a porta interna do
-container é `5432`. O Compose não inicializa uma instância Supabase nem executa o worker.
+**O Supabase é o destino padrão e não precisa do Compose.** O `docker-compose.yml`
+é uma alternativa local com PostgreSQL **18.7**, separada da configuração da
+aplicação. Usa `LOCAL_POSTGRES_DB` (padrão `moringa`), `LOCAL_POSTGRES_USER`
+(`etl_local`), `LOCAL_POSTGRES_PORT` (`5433`) e exige `LOCAL_POSTGRES_PASSWORD`.
+Assim, não reutiliza a senha do Supabase presente no `.env`. A porta interna é
+`5432`; o Compose não executa o worker.
 
-Pare o banco anterior se ele ocupar a mesma porta e execute:
+Forneça `LOCAL_POSTGRES_PASSWORD` no processo por meio seguro, pare o banco
+anterior se ele ocupar a mesma porta e execute:
 
 ```bash
 docker compose up -d --wait postgres
@@ -413,8 +416,9 @@ docker compose down
 
 Execute a entrada `psql`: em banco novo, aplica 000 → 001 → 002 → 003 → 004 → 005;
 quando as tabelas já estão em `etl_private`, executa somente 003/004/005.
-Interrompe em caso de erro. O exemplo abaixo segue o perfil administrativo local
-de `.env.example`:
+Interrompe em caso de erro. O exemplo abaixo é **somente para a alternativa local**,
+com credencial administrativa separada. Para o Supabase já preparado, aplicar
+apenas migrações pendentes usando o administrador, não o usuário do `.env`:
 
 ```bash
 psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/schema.sql
@@ -459,7 +463,7 @@ As roles `etl_writer` e `ai_reader` são grupos sem login nem senha:
 ETL insere/consulta medições e atualiza seu estado; IA só consulta medições.
 Nenhum usuário é associado automaticamente. Provisionar a credencial restrita
 do worker separadamente, conforme o [guia SQL](app/sql/README.md); manter a IA
-sem login até existir um consumidor. Criar `.env.etl` com base no modelo não
+sem login até existir um consumidor. Criar `.env` com base no modelo não
 cria o login `etl_runtime`: provisioná-lo antes de executar o worker. O usuário
 inicializado pelo Compose é administrativo, mesmo que seu nome seja `etl_local`.
 
@@ -474,50 +478,25 @@ Aplicar a 004 antes de executar o parser com fuso. Ela converte o histórico com
 Para visualizar no horário de origem: `timestamp AT TIME ZONE 'America/Sao_Paulo'`.
 Não usar UTC−03:00 fixo para todo o histórico, pois houve horário de verão.
 
-Para separar a credencial administrativa local da credencial restrita do worker,
-usar um arquivo privado `.env.etl` e iniciar com:
-
-```bash
-ETL_ENV_FILE=.env.etl .venv/bin/python -m app.main
-```
-
-O `.env` original continua disponível para administrar o banco e inicializar o
-Docker Compose. `.env.etl` deve ficar fora do Git e legível apenas pelo proprietário.
-Variáveis já exportadas no processo têm precedência sobre o arquivo escolhido.
-
-No Supabase provisionado, usar `.env.supabase` somente para migrações/administração
-e `.env.supabase.etl` para o worker, com credencial restrita:
-
-```bash
-ETL_ENV_FILE=.env.supabase.etl .venv/bin/python -m app.main
-```
-
-Esse comando inicia a ingestão permanente; testes de integração comuns usam
-tabelas temporárias e não carregam o histórico nas tabelas definitivas.
+O `.env` pertence à coleta com acesso restrito ao Supabase. As credenciais
+administrativas ficam em `config-private/`, com arquivos reais ignorados pelo Git;
+nunca trocar o usuário do `.env` pelo dono do banco para fazer manutenção. Ferramentas
+administrativas podem selecionar `ETL_ENV_FILE=config-private/supabase-admin.env`.
+Variáveis já exportadas no processo têm precedência sobre qualquer arquivo.
 
 ### 7. Execute o ETL
 
-Na raiz do projeto, com o ambiente virtual ativo, selecionar explicitamente
-o perfil restrito. Em Linux/macOS ou Git Bash:
+Na raiz do projeto, com o ambiente virtual ativo e o `.env` preenchido:
 
 ```bash
-# PostgreSQL local:
-ETL_ENV_FILE=.env.etl python -m app.main
-
-# OU Supabase:
-ETL_ENV_FILE=.env.supabase.etl python -m app.main
-```
-
-No PowerShell:
-
-```powershell
-$env:ETL_ENV_FILE = ".env.etl" # Ou ".env.supabase.etl".
 python -m app.main
 ```
 
-Não executar os dois destinos simultaneamente para o mesmo fluxo.
-Sem `ETL_ENV_FILE`, o código usa `.env`, reservado aqui à administração:
-não é o perfil recomendado para o worker.
+O comando é o mesmo no PowerShell. Se uma sessão antiga ainda tiver `ETL_ENV_FILE`
+definido, removê-lo antes (`unset ETL_ENV_FILE` no shell; no PowerShell,
+`Remove-Item Env:ETL_ENV_FILE -ErrorAction SilentlyContinue`).
+Isso inicia a ingestão permanente no Supabase, não um teste. Não executar dois
+destinos simultaneamente para o mesmo fluxo.
 
 O worker executa ciclos continuamente até ser interrompido. Para encerrar com segurança, pressione **Ctrl+C**. O fluxo principal fecha a conexão com o banco ao finalizar.
 
@@ -525,7 +504,7 @@ O worker executa ciclos continuamente até ser interrompido. Para encerrar com s
 
 Os logs mostram, separadamente para sensores e boias:
 
-- **Recebidos:** registros posteriores ao checkpoint, antes da validação do formato e dos campos.
+- **Recebidos:** leituras encaminhadas à classificação, incluindo IDs desconhecidos encontrados na janela; IDs conhecidos pulados na janela não são contados.
 - **Inseridos:** novas linhas persistidas no banco.
 - **Já existentes:** leituras ignoradas por conflito na chave primária.
 - **Erros:** leituras com falha na normalização ou persistência.
@@ -563,17 +542,16 @@ O fluxo esperado é somente extração e classificação, sem alterações manua
 Se precisar utilizá-lo, use um ambiente configurado para o banco correto. O comando disputa a mesma trava da ingestão; se ela estiver ocupada, não inicia. Para uma janela de manutenção previsível, pare o worker antes de executar a recuperação.
 
 ```bash
-# Selecionar explicitamente o mesmo perfil restrito do worker.
-# Nos exemplos, Supabase; trocar por .env.etl para o banco local.
+# Usam automaticamente o mesmo .env restrito da coleta.
 # Após corrigir o normalizador: usa o payload salvo, sem consultar Firebase.
-ETL_ENV_FILE=.env.supabase.etl python -m app.reprocess_rejections --limit 100
+python -m app.reprocess_rejections --limit 100
 
 # Após corrigir a leitura no Firebase: relê o registro pela chave exata.
-ETL_ENV_FILE=.env.supabase.etl python -m app.reprocess_rejections --source sensores --device-id EST001 --limit 50 --refresh-from-firebase
+python -m app.reprocess_rejections --source sensores --device-id EST001 --limit 50 --refresh-from-firebase
 ```
 
-No PowerShell, definir `$env:ETL_ENV_FILE` antes do comando Python, como na
-execução principal.
+No PowerShell, usar os mesmos comandos. Correção de medição já aceita exige
+acesso administrativo separado: ver [procedimento](docs/firebase-incremental.md).
 
 Cada comando processa **um lote** de rejeições pendentes, priorizando as tentativas mais antigas. Não existe reprocessamento automático das rejeições no loop principal nem edição automática de payloads. Falhas operacionais da ingestão podem causar releitura no ciclo seguinte, pois impedem o avanço do checkpoint. `--source` e `--device-id` são filtros opcionais.
 
@@ -607,15 +585,13 @@ python -m unittest tests.unit.test_etl_worker
 As integrações são puladas por padrão e exigem autorização explícita:
 
 ```bash
-# Local:
-ETL_ENV_FILE=.env.etl RUN_INTEGRATION=1 python -m tests.runner integration
-
-# OU Supabase:
-ETL_ENV_FILE=.env.supabase.etl RUN_INTEGRATION=1 python -m tests.runner integration
+# Usa o Supabase configurado no .env:
+RUN_INTEGRATION=1 python -m tests.runner integration
 ```
 
-No PowerShell, defina `$env:ETL_ENV_FILE` com o perfil escolhido e
-`$env:RUN_INTEGRATION = "1"` antes do comando; remova as variáveis ao terminar.
+No PowerShell, defina `$env:RUN_INTEGRATION = "1"` antes do comando e remova a
+variável ao terminar. Para outro destino de teste, usar variáveis do processo
+ou arquivo privado conforme o [guia de configuração](docs/configuracao.md).
 Use somente credenciais e banco de teste. Os testes comuns de escrita SQL usam
 tabelas temporárias por sessão; isso não valida desempenho dos índices.
 A suíte de permissões exige autorização extra e cluster descartável, pois cria
@@ -640,6 +616,7 @@ roles e objetos permanentes. Consulte [TESTING.md](docs/TESTING.md) para detalhe
 ### Já implementado no fluxo principal
 
 - Consultas periódicas incrementais ao Firebase Realtime Database.
+- Primeira carga e avanço por páginas, com tamanho e janela de atraso configuráveis.
 - Processamento separado de sensores e boias.
 - Normalização de campos e timestamps.
 - Persistência em lote no PostgreSQL.
@@ -647,6 +624,7 @@ roles e objetos permanentes. Consulte [TESTING.md](docs/TESTING.md) para detalhe
 - Persistência durável de rejeições, sem bloquear o avanço por dados inválidos.
 - Isolamento de erros SQL de dados/integridade para não descartar os válidos do lote.
 - Comando opcional de reprocessamento, fora do fluxo normal.
+- Recuperação de histórico por intervalo e correção administrativa explícita com auditoria.
 - Trava PostgreSQL compartilhada entre ingestão e reprocessamento, sem reconexão durante a operação protegida.
 - Proteção contra duplicatas via `ON CONFLICT DO NOTHING`.
 - Logs e contadores por ciclo.
@@ -675,12 +653,12 @@ de capacidade ou recuperação de produção. Procedimento e limites no
 ### Pontos que ainda exigem atenção
 
 - **Listener em tempo real:** `listener.py` ainda não implementa a escuta efetiva.
-- **Carga inicial e backlog:** a leitura Firebase ainda não é paginada; todo o resultado por equipamento pode ficar em memória.
-- **Integridade:** falta confirmar o contrato das chaves com o firmware e definir reconciliação para chaves atrasadas; rejeições anteriores à nova tabela não são recuperadas automaticamente.
+- **Carga inicial e backlog:** a leitura já é paginada; medir CPU, duração e memória no ambiente definitivo conforme o volume crescer.
+- **Integridade:** a origem real e suas consultas foram verificadas; ainda é necessário confirmar o comportamento offline do firmware e executar conferências periódicas para atrasos fora da janela. Rejeições antigas que só ficaram nos logs não são recuperadas automaticamente.
 - **Concorrência:** sessões no Supabase e disputa entre processos no ensaio
   descartável já foram validadas. Ensaiar também encerramento abrupto e retomada
   no ambiente definitivo; a trava não coordena bancos diferentes.
-- **Atualização de leituras:** o mecanismo de conflito não atualiza registros existentes.
+- **Atualização de leituras:** a coleta não substitui valores existentes. O comando de correção está implementado e testado; requer a migração 005 e acesso administrativo separado.
 - **Operação:** faltam tratamento explícito de SIGTERM, limites de espera nas
   chamadas Firebase, tentativas limitadas com espera progressiva e alertas de
   ausência de sucesso. Os timeouts PostgreSQL já estão implementados e validados.

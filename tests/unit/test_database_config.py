@@ -8,7 +8,9 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app.config.config import Config
+from dotenv import dotenv_values
+
+from app.config.config import Config, PROJECT_ROOT, load_environment
 from app.database.connection import DatabaseConnection
 
 
@@ -152,7 +154,7 @@ class TestDatabaseConfig(unittest.TestCase):
 
     def test_alternative_env_file_can_be_loaded_without_cli_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / ".env.etl"
+            path = Path(directory) / "external-test.env"
             path.write_text("POSTGRES_USER=restricted_test\nPOSTGRES_SCHEMA=etl_private\n")
             environment = {
                 name: value for name, value in os.environ.items()
@@ -168,3 +170,122 @@ class TestDatabaseConfig(unittest.TestCase):
                 env=environment, capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_default_env_is_loaded_from_project_root_not_current_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text("POSTGRES_USER=restricted_default\nETL_PAGE_SIZE=37\n")
+            with patch.dict(os.environ, {}, clear=True):
+                path = load_environment(root)
+                self.assertEqual(path, root / ".env")
+                self.assertEqual(Config().POSTGRES_USER, "restricted_default")
+                self.assertEqual(Config().ETL_PAGE_SIZE, 37)
+
+    def test_single_example_lists_every_application_setting_without_credentials(self):
+        example = dotenv_values(PROJECT_ROOT / ".env.example")
+        self.assertEqual(set(example), set(vars(Config())))
+        self.assertEqual(len(example), 16)
+        self.assertEqual(example["POSTGRES_SSLMODE"], "verify-full")
+        self.assertEqual(example["POSTGRES_PASSWORD"], "PREENCHA_A_SENHA_DO_ETL_SUPABASE")
+        for old in (".env.etl.example", ".env.supabase.example", ".env.supabase.etl.example"):
+            self.assertFalse((PROJECT_ROOT / old).exists())
+
+    def test_process_values_override_file_without_loading_other_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text("POSTGRES_USER=file_user\nETL_PAGE_SIZE=37\n")
+            (root / ".env.supabase").write_text("POSTGRES_USER=admin_must_not_load\n")
+            with patch.dict(os.environ, {"POSTGRES_USER": "injected_user"}, clear=True):
+                load_environment(root)
+                self.assertEqual(Config().POSTGRES_USER, "injected_user")
+                self.assertEqual(Config().ETL_PAGE_SIZE, 37)
+
+    def test_private_profile_examples_are_complete_and_have_only_placeholder_passwords(self):
+        names = ("supabase-admin", "local-admin", "local-etl")
+        for name in names:
+            with self.subTest(profile=name):
+                values = dotenv_values(PROJECT_ROOT / "config-private" / f"{name}.env.example")
+                self.assertEqual(set(values), set(vars(Config())))
+                self.assertTrue(values["POSTGRES_PASSWORD"].startswith("PREENCHA_"))
+                self.assertIn("SEU-PROJETO", values["FIREBASE_DATABASE_URL"])
+                self.assertEqual(values["POSTGRES_SSLMODE"],
+                                 "verify-full" if name == "supabase-admin" else "disable")
+
+    def test_git_ignores_real_profiles_and_only_allows_the_three_named_examples(self):
+        for name in ("supabase-admin", "local-admin", "local-etl"):
+            for suffix, expected in ((".env", 0), (".env.example", 1)):
+                result = subprocess.run(
+                    ["git", "check-ignore", "--no-index", "--quiet", "--",
+                     f"config-private/{name}{suffix}"],
+                    cwd=PROJECT_ROOT, capture_output=True,
+                )
+                self.assertEqual(result.returncode, expected)
+        for path in (".env", "config-private/extra-secret.env",
+                     "config-private/unknown.env.example", "config-private/nested/secret.env"):
+            result = subprocess.run(
+                ["git", "check-ignore", "--no-index", "--quiet", "--", path],
+                cwd=PROJECT_ROOT, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0)
+
+    def test_external_file_replaces_default_instead_of_merging_admin_and_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text("POSTGRES_USER=default_user\nETL_PAGE_SIZE=37\n")
+            external = root / "maintenance.env"
+            external.write_text("POSTGRES_USER=maintenance_user\n")
+            with patch.dict(os.environ, {"ETL_ENV_FILE": str(external)}, clear=True):
+                self.assertEqual(load_environment(root), external)
+                self.assertEqual(Config().POSTGRES_USER, "maintenance_user")
+                self.assertEqual(Config().ETL_PAGE_SIZE, 500)
+
+    def test_missing_default_allows_configuration_injected_by_deploy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"POSTGRES_USER": "injected"}, clear=True):
+                load_environment(Path(directory))
+                self.assertEqual(Config().POSTGRES_USER, "injected")
+
+    def test_missing_explicit_file_fails_instead_of_falling_back_to_dotenv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"ETL_ENV_FILE": "missing.env"}, clear=True):
+                with self.assertRaisesRegex(ValueError, "ETL_ENV_FILE"):
+                    load_environment(Path(directory))
+
+    def test_import_from_another_directory_still_selects_repository_dotenv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {
+                name: value for name, value in os.environ.items()
+                if not name.startswith(("POSTGRES_", "FIREBASE_", "ETL_"))
+            }
+            environment["PYTHONPATH"] = str(PROJECT_ROOT)
+            result = subprocess.run(
+                [sys.executable, "-c", (
+                    "from app.config.config import ENV_FILE, PROJECT_ROOT; "
+                    "assert ENV_FILE == PROJECT_ROOT / '.env'"
+                )],
+                cwd=directory, env=environment, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rehearsal_child_does_not_inherit_active_supabase_configuration(self):
+        from app.operations.rehearse import child
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / "disposable.env"
+            profile.write_text("POSTGRES_HOST=127.0.0.1\n")
+            with patch.dict(os.environ, {
+                "POSTGRES_HOST": "active-supabase",
+                "FIREBASE_DATABASE_URL": "active-source",
+                "ETL_ENV_FILE": "old-profile",
+                "ETL_PAGE_SIZE": "1",
+                "ETL_LOOKBACK_RECORDS": "0",
+                "PATH": os.environ.get("PATH", ""),
+            }, clear=True), patch("app.operations.rehearse.subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = "completed"
+                self.assertEqual(child(profile, "app.operations.rehearse", "actor"), "completed")
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(environment["ETL_ENV_FILE"], str(profile))
+            self.assertNotIn("POSTGRES_HOST", environment)
+            self.assertNotIn("FIREBASE_DATABASE_URL", environment)
+            self.assertNotIn("ETL_PAGE_SIZE", environment)
+            self.assertNotIn("ETL_LOOKBACK_RECORDS", environment)

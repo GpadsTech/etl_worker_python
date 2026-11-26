@@ -41,7 +41,7 @@ Levantamento de **16/11/2026**, com dados reais:
 
 A medição local usou Python **3.14.4**, leitura/normalização reais e montagem SQL, **sem inserts ou alteração de checkpoints**. A carga histórica levou **2,54 segundos nessa simulação**, não em ingestão completa no Render.
 
-70 MiB são cerca de 73 MB decimais: **14% dos 512 MB anunciados**. Margem favorável à homologação, não aprovação de produção: medir CPU, inserts e RAM no container. O backlog ainda pode ficar inteiro em memória; crescimento futuro não foi validado.
+70 MiB são cerca de 73 MB decimais: **14% dos 512 MB anunciados**. Margem favorável à homologação, não aprovação de produção: medir CPU, inserts e RAM no container. A versão medida ainda podia manter todo o backlog em memória. A T05 acrescentou paginação; essa medição histórica não representa um novo ensaio de memória da versão atual. Crescimento futuro não foi validado.
 
 ## Motivos e custos
 
@@ -73,10 +73,15 @@ Referência de planos consultada em 16/11/2026: Free com 500 MB de banco, CPU co
 
 Os **13,365 MiB do banco de teste**, não da conta Supabase, indicam volume pequeno frente a 500 MB. Não validam crescimento, rejeições, egress, CPU ou retenção no serviço. RAM do banco é separada da RAM do cron.
 
-**Pendências operacionais, não de aprovação do Supabase:** primeira carga
-permanente, implantação do worker no Render, acompanhamento de crescimento e
-consumo, definição de backups e ensaio de restauração. A configuração concluída
-não equivale à implantação do worker nem a um ensaio de capacidade em produção.
+**Atualização após T04/T05:** a carga permanente de 9.293 medições e a restauração
+lógica em ambiente descartável já foram validadas. A migração 005 de auditoria
+foi implementada e testada separadamente, mas não aplicada implicitamente no
+Supabase permanente.
+
+**Pendências operacionais, não de aprovação do Supabase:** implantação do worker
+no Render, acompanhamento de crescimento e consumo, cópias duráveis com retenção
+e ensaio de recuperação no ambiente definitivo. As validações concluídas não
+equivalem à implantação do worker nem a um ensaio de capacidade em produção.
 
 Cron + Supabase Free: referência **US$ 1/mês**; com Pro/Micro, **US$ 26/mês**, sem workspace Render Pro/extras. São estimativas históricas de custo, não comprovação de contratação do Render ou de um plano pago do Supabase.
 

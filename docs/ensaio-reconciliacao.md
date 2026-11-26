@@ -21,7 +21,9 @@ Ferramentas:
   carga, delta, replay, disputa de processos e retorno.
 
 Requisitos: Linux com Docker, imagem `postgres:18.7`, dependências Python instaladas,
-CA confiável do Supabase e login com SELECT nas quatro tabelas. O cliente
+CA confiável do Supabase e login com SELECT nas tabelas incluídas. Após a 005,
+backup exige acesso administrativo à auditoria, guardado em `config-private/`,
+fora do Git. A conferência comum usa o `.env` restrito da aplicação. O cliente
 `pg_dump` deve suportar a versão do servidor; não reutilizar um cliente mais antigo.
 As migrações versionadas preparam o schema; o dump não restaura DDL, extensões,
 hypertables, roles ou ACLs.
@@ -48,11 +50,12 @@ que ignorem essa convenção.
 Executar na raiz, escolhendo diretórios novos e privados:
 
 ```bash
-ETL_ENV_FILE=.env.supabase.etl .venv/bin/python -m app.operations.backup backup \
+ETL_ENV_FILE=config-private/supabase-admin.env .venv/bin/python -m app.operations.backup backup \
   --directory sprint02/task02-artifacts/NOVA_EXECUCAO/backup-before
 ```
 
-O backup contém as quatro tabelas `etl_private`: medições, checkpoints e rejeições.
+O backup contém as quatro tabelas originais de `etl_private`: medições,
+checkpoints e rejeições, além da auditoria quando a 005 estiver instalada.
 `data.dump`, `manifest.json` e `toc.json` devem permanecer juntos. O dump usa um
 snapshot exportado da mesma transação que calculou os hashes, sob trava do ETL.
 Não passa senhas na linha de comando: o perfil libpq é temporário, privado e
@@ -74,7 +77,7 @@ Ver [política de correção histórica](firebase-incremental.md).
 ## 3. Conferir origem e destino
 
 ```bash
-ETL_ENV_FILE=.env.supabase.etl .venv/bin/python -m app.operations.reconcile \
+.venv/bin/python -m app.operations.reconcile \
   --output sprint02/task02-artifacts/NOVA_EXECUCAO/before
 ```
 
@@ -99,14 +102,15 @@ global sobre capturas inconsistentes.
 ## 4. Ensaiar o retorno sem tocar no Supabase
 
 ```bash
-ETL_ENV_FILE=.env.supabase.etl .venv/bin/python -m app.operations.rehearse run \
+.venv/bin/python -m app.operations.rehearse run \
   --snapshot sprint02/task02-artifacts/NOVA_EXECUCAO/before/firebase.json \
   --source-backup sprint02/task02-artifacts/NOVA_EXECUCAO/backup-before \
   --output sprint02/task02-artifacts/NOVA_EXECUCAO/rehearsal
 ```
 
 O comando cria e remove seu próprio cluster Docker. A restauração do backup real
-é validada por contagens e hashes das quatro tabelas. Em seguida, para cada recorte:
+é validada por contagens e hashes das tabelas do manifesto, incluindo auditoria
+quando presente. Em seguida, para cada recorte:
 
 1. Usa leituras reais do snapshot, reservando a última chave de cada equipamento.
 2. Carrega o conjunto inicial com o worker real e salva backup de dados/estado.
@@ -132,15 +136,15 @@ Nunca restaurar checkpoint à frente das medições/rejeições correspondentes.
 4. Repetir a comparação, registrando também o delta desde a captura anterior:
 
 ```bash
-ETL_ENV_FILE=.env.supabase.etl .venv/bin/python -m app.operations.reconcile \
+.venv/bin/python -m app.operations.reconcile \
   --previous sprint02/task02-artifacts/NOVA_EXECUCAO/before/firebase.json \
   --output sprint02/task02-artifacts/NOVA_EXECUCAO/after
 ```
 
 `delta.json` distingue chaves adicionadas, removidas, alteradas e chegadas com
-chave anterior ao checkpoint. Leituras atrasadas não são capturadas automaticamente
-pelo algoritmo incremental atual: bloquear o aceite e fazer backfill/reconciliação
-explícita. Correções de leituras já persistidas também exigem decisão manual,
+chave anterior ao checkpoint. Leituras atrasadas fora da janela configurada
+exigem backfill/reconciliação explícita antes do aceite. Correções de leituras
+já persistidas também exigem ação explícita,
 pois a política mantém a primeira versão.
 
 Autorizar retomada normal somente com `passed=true`, origem estável, nenhuma
@@ -155,7 +159,7 @@ diferença inexplicada e somente um escritor configurado.
    destino vazio; não usar um túnel para contornar essa proteção:
 
 ```bash
-ETL_ENV_FILE=ARQUIVO_PRIVADO_DO_RETORNO_LOCAL .venv/bin/python -m app.operations.backup restore \
+ETL_ENV_FILE=/CAMINHO/PRIVADO/retorno-local.env .venv/bin/python -m app.operations.backup restore \
   --directory sprint02/task02-artifacts/NOVA_EXECUCAO/backup-before --confirm-empty-local
 ```
 
