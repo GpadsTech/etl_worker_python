@@ -59,6 +59,17 @@ Não passa senhas na linha de comando: o perfil libpq é temporário, privado e
 removido depois do uso. Artefatos têm permissão `0600`; diretórios de dados, `0700`.
 São dados reais, não devem ir ao Git ou a canais públicos. Para operação contínua,
 definir também cópia durável protegida, retenção e responsabilidade de recuperação.
+O diretório temporário do perfil é criado automaticamente, respeitando `TMPDIR`;
+não é necessário ter `/tmp/opencode` na máquina para executar as ferramentas.
+
+**Após a T05:** os backups administrativos incluem também `etl_corrections`
+quando a migração 005 estiver instalada. As quatro tabelas originais continuam
+sendo usadas pela reconciliação normal com login restrito; a auditoria não é
+exposta ao ETL/IA. O manifesto do backup passa a listar cinco tabelas nesse caso,
+e a restauração confere todas elas. Um backup anterior sem auditoria só é aceito
+se a tabela adicional estiver vazia no destino. Nunca omitir auditoria por falta
+de permissão: usar o perfil administrativo para backup após a 005.
+Ver [política de correção histórica](firebase-incremental.md).
 
 ## 3. Conferir origem e destino
 

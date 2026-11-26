@@ -14,6 +14,8 @@ from psycopg2 import DataError, IntegrityError
 
 from app.utils.logger import get_logger
 from app.firebase.client import FirebaseClient
+from app.firebase.pagination import iter_pages, last_key, window_start, validate_key
+from app.config.config import config
 from app.transformer.normalize import (
     normalize_sensor,
     normalize_buoy,
@@ -58,6 +60,8 @@ class ETLWorker:
         )
 
         self.logger = get_logger()
+        self.page_size = config.ETL_PAGE_SIZE
+        self.lookback_records = config.ETL_LOOKBACK_RECORDS
 
     def _process(
         self,
@@ -68,170 +72,129 @@ class ETLWorker:
         id_field: str,
         repository,
     ) -> tuple[int, int, int, int]:
-        """
-        Processa uma origem (sensores ou boias) de forma incremental.
-
-        Para cada equipamento, lê apenas as chaves posteriores ao último
-        checkpoint, normaliza os registros e grava em lote. O checkpoint
-        avança mesmo com leituras inválidas, depois de salvar os válidos e
-        as rejeições. Somente falhas operacionais que impeçam persistência
-        deixam o checkpoint anterior para permitir uma nova tentativa.
-        """
-
+        """Reconsulta limitada seguida de avanço até um horizonte fixo."""
         self.firebase.connect()
-
         equipamentos = root_reference.get(shallow=True)
-
-        if not isinstance(equipamentos, dict):
+        if equipamentos is None:
             return 0, 0, 0, 0
+        if not isinstance(equipamentos, dict):
+            raise ValueError("Raiz Firebase deve ser um objeto.")
+        totals = [0, 0, 0, 0]
+        for device_id in sorted(equipamentos):
+            checkpoint = self.checkpoints.get(source, device_id)
+            if checkpoint is not None:
+                validate_key(checkpoint)
+            reference = data_reference(device_id)
+            horizon = last_key(reference)
+            if horizon is None:
+                continue
+            durable = True
+            if checkpoint is not None and self.lookback_records:
+                lower = window_start(
+                    reference, checkpoint, self.lookback_records, self.page_size,
+                )
+                if lower is not None:
+                    for page in iter_pages(
+                        reference, self.page_size, start=lower, end=min(checkpoint, horizon),
+                    ):
+                        counts, durable = self._persist_unseen(
+                            source, device_id, page, normalize, id_field, repository,
+                        )
+                        totals = [a + b for a, b in zip(totals, counts)]
+                        if not durable:
+                            break
+            if not durable:
+                continue
+            for page in iter_pages(reference, self.page_size, after=checkpoint, end=horizon):
+                counts, durable = self._persist_page(
+                    source, device_id, page, normalize, id_field, repository,
+                )
+                totals = [a + b for a, b in zip(totals, counts)]
+                if not durable:
+                    break
+                try:
+                    self.checkpoints.set(source, device_id, max(page))
+                except WorkerLockLostError:
+                    raise
+                except Exception as error:
+                    self.logger.error(
+                        f"Falha ao gravar checkpoint | Origem: {source} | "
+                        f"Equipamento: {device_id} | Tipo: {type(error).__name__}"
+                    )
+                    break
+        return tuple(totals)
 
+    def _persist_unseen(self, source, device_id, page, normalize, id_field, repository):
+        known = repository.existing_ids(device_id, page)
+        known |= self.rejections.existing_ids(source, device_id, page)
+        unseen = {key: value for key, value in page.items() if key not in known}
+        return self._persist_page(source, device_id, unseen, normalize, id_field, repository)
+
+    def _persist_page(self, source, device_id, registros, normalize, id_field, repository):
+        """Retorna contagens e confirmação de durabilidade; nunca move cursor."""
         recebidos = 0
         inseridos = 0
         ignorados = 0
         erros = 0
 
-        for device_id in sorted(equipamentos):
+        pendentes, rejeitados = [], []
+        for firebase_id, data in registros.items():
+            recebidos += 1
+            try:
+                if not isinstance(data, dict):
+                    raise ValueError("A leitura deve ser um objeto JSON.")
+                pendentes.append(normalize(
+                    firebase_id=firebase_id, **{id_field: device_id}, data=data,
+                ))
+            except WorkerLockLostError:
+                raise
+            except Exception as error:
+                erros += 1
+                rejeitados.append(Rejection(
+                    source, device_id, firebase_id, data,
+                    f"{type(error).__name__}: {error}",
+                ))
+                self.logger.error(
+                    f"Falha ao normalizar {source} | Equipamento: {device_id} | "
+                    f"Firebase ID: {firebase_id} | Tipo: {type(error).__name__}"
+                )
+        falhou_banco = False
+        if pendentes:
+            try:
+                criados = repository.insert_many(pendentes)
+                inseridos += criados
+                ignorados += len(pendentes) - criados
+            except (DataError, IntegrityError):
+                criados, existentes, falhas, rejeicoes_sql = self._persist_individually(
+                    repository, pendentes, registros, source, device_id,
+                )
+                inseridos += criados
+                ignorados += existentes
+                erros += falhas + len(rejeicoes_sql)
+                rejeitados.extend(rejeicoes_sql)
+                falhou_banco = falhas > 0
+            except WorkerLockLostError:
+                raise
+            except Exception as error:
+                erros += len(pendentes)
+                falhou_banco = True
+                self.logger.error(
+                    f"Falha ao gravar {source} | Equipamento: {device_id} | "
+                    f"Tipo: {type(error).__name__}"
+                )
+        if rejeitados:
+            try:
+                self.rejections.save_many(rejeitados)
+            except WorkerLockLostError:
+                raise
+            except Exception as error:
+                falhou_banco = True
+                self.logger.error(
+                    f"Falha ao salvar rejeições de {source} | Equipamento: {device_id} | "
+                    f"Tipo: {type(error).__name__}"
+                )
 
-            ultima_chave = self.checkpoints.get(source, device_id)
-
-            consulta = data_reference(device_id).order_by_key()
-
-            if ultima_chave is not None:
-                # start_at é inclusivo: o registro de fronteira é pulado
-                # pelo filtro abaixo.
-                consulta = consulta.start_at(ultima_chave)
-
-            registros = consulta.get()
-
-            if not isinstance(registros, dict):
-                continue
-
-            pendentes = []
-            rejeitados = []
-            maior_chave = ultima_chave
-
-            for firebase_id, data in registros.items():
-
-                if (
-                    ultima_chave is not None
-                    and firebase_id <= ultima_chave
-                ):
-                    continue
-
-                recebidos += 1
-
-                if maior_chave is None or firebase_id > maior_chave:
-                    maior_chave = firebase_id
-
-                try:
-                    if not isinstance(data, dict):
-                        raise ValueError("A leitura deve ser um objeto JSON.")
-
-                    pendentes.append(
-                        normalize(
-                            firebase_id=firebase_id,
-                            **{id_field: device_id},
-                            data=data,
-                        )
-                    )
-
-                except WorkerLockLostError:
-                    raise
-                except Exception as error:
-                    erros += 1
-                    rejeitados.append(
-                        Rejection(
-                            source, device_id, firebase_id, data,
-                            f"{type(error).__name__}: {error}",
-                        )
-                    )
-
-                    self.logger.error(
-                        f"Falha ao normalizar {source} | "
-                        f"Equipamento: {device_id} | "
-                        f"Firebase ID: {firebase_id} | "
-                        f"Tipo: {type(error).__name__}"
-                    )
-
-            falhou_banco = False
-
-            if pendentes:
-
-                try:
-                    criados = repository.insert_many(pendentes)
-
-                    inseridos += criados
-                    ignorados += len(pendentes) - criados
-
-                except (DataError, IntegrityError):
-                    # O repository já reverteu todo o lote. Isolar erros
-                    # de dados para que uma leitura não descarte as demais.
-                    criados, existentes, falhas, rejeicoes_sql = (
-                        self._persist_individually(
-                            repository, pendentes, registros, source, device_id,
-                        )
-                    )
-                    inseridos += criados
-                    ignorados += existentes
-                    erros += falhas + len(rejeicoes_sql)
-                    rejeitados.extend(rejeicoes_sql)
-                    falhou_banco = falhas > 0
-
-                except WorkerLockLostError:
-                    raise
-                except Exception as error:
-                    erros += len(pendentes)
-                    falhou_banco = True
-
-                    self.logger.error(
-                        f"Falha ao gravar {source} | "
-                        f"Equipamento: {device_id} | "
-                        f"Registros: {len(pendentes)} | "
-                        f"Tipo: {type(error).__name__}"
-                    )
-
-            # A classificação de todo o equipamento terminou. Rejeições
-            # são um resultado durável do ETL, não uma fila que bloqueia
-            # o avanço à espera de correção ou ação manual.
-            if rejeitados:
-                try:
-                    self.rejections.save_many(rejeitados)
-                except WorkerLockLostError:
-                    raise
-                except Exception as error:
-                    falhou_banco = True
-                    self.logger.error(
-                        f"Falha ao salvar rejeições de {source} | "
-                        f"Equipamento: {device_id} | "
-                        f"Registros: {len(rejeitados)} | "
-                        f"Tipo: {type(error).__name__}"
-                    )
-
-            if (
-                maior_chave is not None
-                and maior_chave != ultima_chave
-                and not falhou_banco
-            ):
-                try:
-                    self.checkpoints.set(
-                        source,
-                        device_id,
-                        maior_chave,
-                    )
-
-                except WorkerLockLostError:
-                    raise
-                except Exception as error:
-                    # Dados e rejeições já foram commitados. Repetir a
-                    # leitura é seguro: suas chaves evitam duplicação.
-                    self.logger.error(
-                        f"Falha ao gravar checkpoint | "
-                        f"Origem: {source} | "
-                        f"Equipamento: {device_id} | "
-                        f"Motivo: {error}"
-                    )
-
-        return recebidos, inseridos, ignorados, erros
+        return (recebidos, inseridos, ignorados, erros), not falhou_banco
 
     def _persist_individually(
         self, repository, objects, payloads, source, device_id,

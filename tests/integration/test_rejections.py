@@ -8,6 +8,7 @@ from app.repository.rejection_repository import RejectionRepository
 from app.worker.etl_worker import ETLWorker
 from tests.integration.gate import integration_test
 from tests.integration.temporary_database import TemporaryDatabaseTestCase
+from tests.legacy_paging import isolate_persistence
 
 
 @integration_test
@@ -25,6 +26,7 @@ class TestRejections(TemporaryDatabaseTestCase):
         with patch("app.worker.etl_worker.DatabaseConnection", return_value=self.database):
             worker = ETLWorker()
         worker.firebase = Mock()
+        isolate_persistence(self, worker)
         worker.logger = Mock()
         return worker
 

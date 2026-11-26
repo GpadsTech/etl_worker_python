@@ -15,7 +15,7 @@ import tempfile
 
 from app.config.config import config
 from app.database.connection import DatabaseConnection
-from app.operations.reconcile import TABLES, digest, read_tables, write_private
+from app.operations.reconcile import digest, read_tables, write_private
 
 
 IMAGE = "postgres:18.7"
@@ -31,7 +31,12 @@ def fingerprints(tables):
 
 @contextmanager
 def service_profile(parameters):
-    with tempfile.TemporaryDirectory(prefix="etl-pg-service-", dir="/tmp/opencode") as folder:
+    # Respeitar TMPDIR; preferir a área do harness quando disponível, sem
+    # depender dela em outras máquinas. None usa o temporário padrão do Python.
+    temp_root = os.getenv("TMPDIR") or None
+    if not temp_root and Path("/tmp/opencode").is_dir():
+        temp_root = "/tmp/opencode"
+    with tempfile.TemporaryDirectory(prefix="etl-pg-service-", dir=temp_root) as folder:
         root = Path(folder)
         values = {
             "host": parameters["host"], "port": str(parameters["port"]),
@@ -88,7 +93,7 @@ def create_backup(output):
                 cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 cursor.execute("SELECT pg_export_snapshot(), current_setting('server_version')")
                 snapshot, version = cursor.fetchone()
-            before = fingerprints(read_tables(connection))
+            before = fingerprints(read_tables(connection, include_audit=True))
             postgres_tool(parameters, output, [
                 "pg_dump", "--dbname=service=etl", f"--schema={config.POSTGRES_SCHEMA}",
                 "--format=custom", "--data-only", "--no-owner", "--no-privileges",
@@ -103,11 +108,11 @@ def create_backup(output):
             entries = [
                 line for line in toc.splitlines() if line and not line.startswith(";")
             ]
-            if len(entries) != 4 or any(
+            if len(entries) != len(before) or any(
                 f"TABLE DATA {config.POSTGRES_SCHEMA} {table} " not in "\n".join(entries)
-                for table in TABLES
+                for table in before
             ):
-                raise ValueError("O dump não contém exatamente as quatro tabelas de dados.")
+                raise ValueError("O dump não contém exatamente as tabelas do manifesto.")
             write_private(output / "toc.json", entries)
             manifest = {
                 "captured_at": datetime.now(timezone.utc),
@@ -143,7 +148,7 @@ def restore_empty_local(backup, confirmed=False):
     try:
         with database.exclusive():
             connection = database.connect()
-            current = fingerprints(read_tables(connection))
+            current = fingerprints(read_tables(connection, include_audit=True))
             if any(item["count"] for item in current.values()):
                 raise ValueError("Destino não vazio: restauração recusada sem apagar dados.")
             connection.rollback()
@@ -152,7 +157,12 @@ def restore_empty_local(backup, confirmed=False):
                 "--single-transaction", "--exit-on-error", "--no-owner",
                 "--no-privileges", "/artifacts/data.dump",
             ], readonly=True)
-            after = fingerprints(read_tables(connection))
+            after = fingerprints(read_tables(connection, include_audit=True))
+            # Backups anteriores à 005 não têm auditoria; aceitar só se vazia.
+            if "etl_corrections" not in manifest["tables"]:
+                audit = after.pop("etl_corrections", {"count": 0})
+                if audit["count"]:
+                    raise ValueError("Auditoria inesperada após restauração.")
             if after != manifest["tables"]:
                 raise ValueError("Conteúdo restaurado diverge do manifesto; preservar para inspeção.")
             return {"passed": True, "tables": after}

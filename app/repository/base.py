@@ -5,9 +5,9 @@ Política de conflito: histórico append-only.
 
 A chave primária é ``(equipamento, firebase_id)`` e as inserções usam
 ``ON CONFLICT DO NOTHING``. O banco guarda a primeira versão recebida de
-cada leitura; correções feitas no Firebase não são aplicadas. Essa é uma
-decisão explícita do projeto: não há upsert nem reconciliação enquanto a
-operação não exigir correções.
+    cada leitura; correções feitas no Firebase não são aplicadas pela coleta.
+    Correção administrativa explícita: ``app.reprocess_history correct``,
+    com auditoria transacional e sem conceder UPDATE ao runtime.
 
 O firebase_id não é reutilizado dentro de um equipamento. Alterações de
 timestamp ou payload da mesma leitura não criam uma nova linha.
@@ -43,6 +43,18 @@ class BaseRepository:
             getattr(obj, column)
             for column in self.columns
         )
+
+    def existing_ids(self, device_id, ids):
+        """Consulta limitada às identidades da página atual."""
+        if not ids:
+            return set()
+        with self.database.connect().cursor() as cursor:
+            cursor.execute(
+                f"SELECT firebase_id FROM {self.table_name} "
+                f"WHERE {self.conflict_columns[0]}=%s AND firebase_id=ANY(%s)",
+                (device_id, list(ids)),
+            )
+            return {row[0] for row in cursor.fetchall()}
 
     def insert(self, obj) -> bool:
         """

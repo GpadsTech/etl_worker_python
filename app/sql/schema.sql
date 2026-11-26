@@ -11,3 +11,4 @@ SELECT to_regclass('etl_private.sensor_data') IS NOT NULL AS private_schema_read
 \endif
 \ir migrations/003_private_access.sql
 \ir migrations/004_measurement_timestamptz.sql
+\ir migrations/005_historical_corrections.sql

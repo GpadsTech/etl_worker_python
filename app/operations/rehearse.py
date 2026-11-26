@@ -22,21 +22,39 @@ from app.worker.etl_worker import ETLWorker
 
 
 class Query:
-    def __init__(self, records, start=None):
+    def __init__(self, records, start=None, end=None, first=None, last=None):
         self.records = records
         self.start = start
+        self.end = end
+        self.first = first
+        self.last = last
 
     def order_by_key(self):
         return self
 
     def start_at(self, value):
-        return Query(self.records, value)
+        return Query(self.records, value, self.end, self.first, self.last)
+
+    def end_at(self, value):
+        return Query(self.records, self.start, value, self.first, self.last)
+
+    def limit_to_first(self, value):
+        return Query(self.records, self.start, self.end, value, None)
+
+    def limit_to_last(self, value):
+        return Query(self.records, self.start, self.end, None, value)
 
     def get(self, shallow=False):
-        return {
-            key: True if shallow else value for key, value in sorted(self.records.items())
-            if self.start is None or key >= self.start
-        }
+        rows = [
+            (key, True if shallow else value) for key, value in sorted(self.records.items())
+            if (self.start is None or key >= self.start)
+            and (self.end is None or key <= self.end)
+        ]
+        if self.first is not None:
+            rows = rows[:self.first]
+        if self.last is not None:
+            rows = rows[-self.last:]
+        return dict(rows)
 
 
 class SnapshotSource:

@@ -14,17 +14,22 @@ psql -h localhost -p 5433 -U USUARIO_MIGRACAO -d moringa -v ON_ERROR_STOP=1 -f a
 - 002: identidade por equipamento/ID.
 - 003: roles de acesso e transferência das quatro tabelas para `etl_private`.
 - 004: instantes de sensores e boias em `TIMESTAMPTZ`.
+- 005: auditoria administrativa de correções históricas (`etl_corrections`),
+  sem ampliar permissões do ETL ou da IA.
 
-Em banco que já recebeu 000/001/002, executar 003 e 004. A transferência usa
+Em banco que já recebeu 000/001/002, executar 003, 004 e 005. A transferência usa
 `ALTER TABLE SET SCHEMA`, preservando linhas, chaves e índices, sem cópias em
 `public`. Se houver tabelas homônimas nos dois schemas, a migração aborta sem
 escolher ou apagar dados.
 
 `schema.sql` requer **psql** e inclui as migrações sem duplicar DDL. Ao detectar
-o schema privado já implantado, não reaplica a base pública: executa apenas 003/004,
+o schema privado já implantado, não reaplica a base pública: executa apenas 003/004/005,
 que aceitam reaplicação. Isso não substitui um histórico de versões. Após 003,
 não executar manualmente as migrações antigas 000/001/002: elas usam `public`.
 No SQL Editor do Supabase, aplicar somente as migrações pendentes individualmente.
+Se 004 já estiver aplicada, executar somente 005; a ingestão não depende da
+auditoria, mas a aplicação de correções exige essa tabela.
+Procedimento: [correção histórica](../../docs/firebase-incremental.md).
 
 ## Contrato temporal
 

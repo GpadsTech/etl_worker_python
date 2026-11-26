@@ -146,12 +146,17 @@ def expected_rows(snapshot):
     return tables, checkpoints, invalid
 
 
-def read_tables(connection, schema=None):
+def read_tables(connection, schema=None, include_audit=False):
     schema = schema or config.POSTGRES_SCHEMA
     result = {}
     with connection.cursor() as cursor:
         cursor.execute("SET LOCAL TIME ZONE 'UTC'")
-        for table in TABLES:
+        tables = TABLES
+        if include_audit:
+            cursor.execute("SELECT to_regclass(%s)", (f"{schema}.etl_corrections",))
+            if cursor.fetchone()[0] is not None:
+                tables += ("etl_corrections",)
+        for table in tables:
             cursor.execute(sql.SQL("SELECT to_jsonb(t) FROM {}.{} t").format(
                 sql.Identifier(schema), sql.Identifier(table),
             ))

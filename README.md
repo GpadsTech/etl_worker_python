@@ -69,17 +69,17 @@ Ao executar o worker com um perfil restrito (por exemplo,
    (`.env` quando omitido), e inicializa o logger.
 2. Cria um `ETLWorker` com clientes e repositórios de persistência. Antes de cada ciclo, tenta adquirir a trava PostgreSQL; se estiver ocupada, pula o ciclo sem consultar o Firebase.
 3. Lista os equipamentos de `/sensores` com uma consulta rasa.
-4. Para cada equipamento, consulta `etl_checkpoint` e busca as chaves posteriores à última processada no nó `dados`. A consulta usa `start_at`, inclusivo, e descarta a leitura de fronteira.
-5. Normaliza e categoriza todas as leituras do equipamento, sem interromper as demais por uma leitura inválida. Grava os válidos em lote, em páginas SQL de 500 registros, e as rejeições em `etl_rejections`. Após persistir os dois resultados, avança o checkpoint até a maior chave processada, mesmo quando há rejeições.
+4. Para cada equipamento, lê `etl_checkpoint`, fixa a maior chave do ciclo e reconsulta uma janela de chaves anteriores, classificando apenas IDs desconhecidos.
+5. Percorre as chaves posteriores em páginas Firebase (`ETL_PAGE_SIZE=500`). Normaliza cada página, grava válidos e rejeições e só então confirma seu checkpoint. Falha de persistência/checkpoint impede a próxima página do equipamento.
 6. Repete o processamento para `/boias`.
 7. Registra as estatísticas do ciclo no terminal.
 8. Aguarda o intervalo configurado e inicia uma nova consulta.
 
-**Importante:** a implementação principal utiliza *polling* (consultas periódicas), com espera padrão de **60 segundos após o término de cada ciclo**; não é uma agenda fixa a cada minuto. Sem checkpoint, a primeira consulta pode carregar todo o histórico de um equipamento. O arquivo `app/firebase/readers/listener.py` contém uma classe preparatória, mas o listener em tempo real **ainda não está implementado**.
+**Importante:** a implementação principal utiliza *polling* (consultas periódicas), com espera padrão de **60 segundos após o término de cada ciclo**; não é uma agenda fixa a cada minuto. Sem checkpoint, o histórico é percorrido por páginas. `ETL_LOOKBACK_RECORDS=1000` reconsulta as últimas mil chaves até o cursor, não mil horas nem todos os atrasos possíveis. Contrato e comandos de recuperação/correção: [Firebase incremental](docs/firebase-incremental.md). O listener em tempo real **ainda não está implementado**.
 
 **Rejeição é um resultado da classificação, não um bloqueio do ETL.** Erros de normalização, incluindo leituras que não sejam objetos JSON, são preservados com payload e motivo. Se um erro de dados/integridade no PostgreSQL derrubar um lote, ele é revertido e os registros são tentados individualmente: os válidos são inseridos e os inválidos vão para `etl_rejections`. O processamento normal não depende de correção manual na origem nem de resolução das rejeições.
 
-**Falha de infraestrutura é diferente de rejeição.** Se o banco estiver indisponível ou não conseguir salvar um dos resultados, o checkpoint daquele equipamento fica na posição anterior para não perder leituras sem destino durável. Os commits são separados: parte dos dados pode já estar salva e será relida com segurança quanto a duplicatas no ciclo seguinte. Exceções mais amplas durante um ciclo são registradas em `main.py`, que tenta executar o ciclo seguinte após o intervalo.
+**Falha de infraestrutura é diferente de rejeição.** Se o banco estiver indisponível ou não conseguir salvar um dos resultados, o checkpoint permanece na última página confirmada para não perder leituras sem destino durável. Os commits são separados: parte dos dados pode já estar salva e será relida com segurança quanto a duplicatas no ciclo seguinte. Exceções mais amplas durante um ciclo são registradas em `main.py`, que tenta executar o ciclo seguinte após o intervalo.
 
 ### Exclusividade entre processos
 
@@ -138,7 +138,7 @@ etl_worker_python/
 │   │   ├── sensor_repository.py       # INSERT de sensores (fluxo principal)
 │   │   └── buoy_repository.py         # INSERT de boias (fluxo principal)
 │   ├── sql/
-│   │   ├── migrations/                # Migrações versionadas 000–004
+│   │   ├── migrations/                # Migrações versionadas 000–005
 │   │   ├── README.md                  # Aplicação das migrações e permissões
 │   │   └── schema.sql                 # Entrada psql que inclui as migrações
 │   ├── transformer/
@@ -399,7 +399,7 @@ docker compose ps
 O serviço fica acessível apenas na máquina local. Os dados ficam no volume
 `postgres18_data`, separado do banco antigo. O schema é criado automaticamente
 **somente na primeira inicialização com volume vazio**: `schema.sql` executa as
-migrações 000/001/002/003/004 automaticamente. Dados do banco anterior não são importados.
+migrações 000/001/002/003/004/005 automaticamente. Dados do banco anterior não são importados.
 Não reutilize o volume antigo nem execute `docker compose down -v` se quiser
 preservar os dados.
 
@@ -411,8 +411,8 @@ docker compose down
 
 #### Banco sem Docker ou já existente
 
-Execute a entrada `psql`: em banco novo, aplica 000 → 001 → 002 → 003 → 004;
-quando as tabelas já estão em `etl_private`, executa somente 003/004.
+Execute a entrada `psql`: em banco novo, aplica 000 → 001 → 002 → 003 → 004 → 005;
+quando as tabelas já estão em `etl_private`, executa somente 003/004/005.
 Interrompe em caso de erro. O exemplo abaixo segue o perfil administrativo local
 de `.env.example`:
 
@@ -438,6 +438,7 @@ psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/
 psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/002_device_reading_identity.sql
 psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/003_private_access.sql
 psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/004_measurement_timestamptz.sql
+psql -h localhost -p 5433 -U etl_local -d moringa -v ON_ERROR_STOP=1 -f app/sql/migrations/005_historical_corrections.sql
 ```
 
 Os comandos individuais acima são alternativa ao `schema.sql`, não uma etapa
@@ -445,7 +446,7 @@ adicional. Toda a definição está nas migrações; `schema.sql` apenas as incl
 `\ir`, portanto requer **psql**, não execução direta por psycopg2 ou pelo SQL Editor.
 No SQL Editor do Supabase, executar o conteúdo das migrações individualmente em ordem.
 Não há executor com histórico automático: registrar externamente as versões
-aplicadas. Depois da 003, `schema.sql` detecta a transferência e executa apenas 003/004,
+aplicadas. Depois da 003, `schema.sql` detecta a transferência e executa apenas 003/004/005,
 sem recriar as tabelas em `public`. Não reaplicar manualmente 000/001/002 após essa
 etapa. Executar com o ETL parado, não a cada inicialização.
 
@@ -583,7 +584,7 @@ Cada comando processa **um lote** de rejeições pendentes, priorizando as tenta
 - Falha ao registrar a tentativa ou resolução interrompe o comando; se a medição já foi commitada, repetir é seguro quanto a duplicatas.
 - O código de saída é `0` quando não há erros no lote (inclusive lote vazio), `1` em falhas e `2` para argumentos inválidos.
 
-As rejeições contêm dados brutos e mensagens de erro: restrinja acesso à tabela e aos backups, não exponha payloads em logs e defina retenção antes da produção. Replay da ingestão atualiza a rejeição existente e pode reabri-la; o payload é preservado durante o reprocessamento, não um histórico imutável de todas as versões.
+As rejeições contêm dados brutos e mensagens de erro: restrinja acesso à tabela e aos backups, não exponha payloads em logs e defina retenção antes da produção. A janela normal pula IDs já conhecidos; replay de página sem checkpoint pode atualizar a rejeição existente. O payload é preservado durante o reprocessamento, não um histórico imutável de todas as versões.
 
 ## 🧪 Testes
 
@@ -650,7 +651,7 @@ roles e objetos permanentes. Consulte [TESTING.md](docs/TESTING.md) para detalhe
 - Proteção contra duplicatas via `ON CONFLICT DO NOTHING`.
 - Logs e contadores por ciclo.
 - Tratamento de falhas por registro.
-- PostgreSQL puro, migrações versionadas 000–004 e tabelas privadas em `etl_private`.
+- PostgreSQL puro, migrações versionadas 000–005 e tabelas privadas em `etl_private`.
 - Login restrito do ETL e role de leitura de medições para uma futura aplicação de IA.
 - TLS com validação de certificado/hostname, timeouts e schema configurados na sessão.
 - Datas com fuso de origem `America/Sao_Paulo` e medições em `TIMESTAMPTZ`.
@@ -661,7 +662,8 @@ roles e objetos permanentes. Consulte [TESTING.md](docs/TESTING.md) para detalhe
 - Integração com Firebase e PostgreSQL local/Supabase, usando credencial restrita.
 - Comparação por chave e por todos os valores persistidos, incluindo contagens
   por equipamento/dia, extremos de horário, nulos e amostras.
-- Backup somente de dados e restauração com conferência das quatro tabelas.
+- Backup somente de dados e restauração com conferência das tabelas do manifesto
+  (quatro originais; inclui auditoria administrativa quando 005 está instalada).
 - Ensaio em banco descartável de delta controlado, retomada, releitura sem
   duplicação, bloqueio de outro processo e retorno a partir do backup.
 

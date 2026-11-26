@@ -76,6 +76,27 @@ porta e banco antes de executar. Sem a autorização extra, essa suíte é pulad
 
 Detalhes de roles e migrações: [guia SQL](../app/sql/README.md).
 
+## Paginação e correção histórica
+
+- `tests.unit.test_pagination` exercita consultas limitadas, ordenação, fronteira
+  apagada, repetição, horizonte e validação do formato de push ID.
+- `tests.unit.test_paginated_worker` e `tests.integration.test_pagination`
+  compartilham cenários de falha/retomada, atraso e backfill. A integração usa SQL
+  real em tabelas TEMP, com Firebase simulado.
+- `tests.integration.test_historical_corrections` valida prévia, hashes e
+  atomicidade de UPDATE/auditoria em tabelas TEMP. Não corrige dados definitivos.
+- Testes antigos de persistência usam `tests/legacy_paging.py` para isolar suas
+  queries Mock/IDs curtos; não são evidência de paginação. Os novos testes usam
+  push IDs válidos e o simulador limitado `SnapshotSource`.
+- `test_private_access` inclui a migração 005 e prova que a auditoria é exclusiva
+  da administração; exige o cluster descartável descrito acima.
+
+Na suíte de permissões, o caso `test_abrupt_process_exit_after_commits_then_new_process_resumes`
+encerra um subprocesso com `os._exit` depois dos commits e antes do checkpoint;
+outro subprocesso retoma com sessões/tabelas persistentes no cluster descartável.
+As demais interrupções são injetadas. Nenhum desses testes equivale a queda de
+máquina, desconexão real da rede nem teste de capacidade em produção.
+
 ## Legado
 
 `tests/legacy/test_bootstrap.py` está fora da suíte ativa. O bootstrap legado

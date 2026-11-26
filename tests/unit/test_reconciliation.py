@@ -4,11 +4,12 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import os
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app.operations.backup import file_hash, fingerprints, restore_empty_local
+from app.operations.backup import file_hash, fingerprints, restore_empty_local, service_profile
 from app.operations.reconcile import (
     compare, digest, expected_rows, select_scope, snapshot_delta, write_daily_csv,
 )
@@ -175,3 +176,34 @@ class TestReconciliation(unittest.TestCase):
                 config.POSTGRES_SCHEMA = "etl_private"
                 with self.assertRaisesRegex(ValueError, "Checksum"):
                     restore_empty_local(directory, confirmed=True)
+
+    def test_service_profile_works_without_harness_temp_directory_and_is_removed(self):
+        parameters = {
+            "host": "localhost", "port": 5432, "dbname": "test",
+            "user": "test", "password": "test-only", "sslmode": "disable",
+            "connect_timeout": 10,
+        }
+        factory = tempfile.TemporaryDirectory
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("app.operations.backup.Path.is_dir", return_value=False):
+                with patch("app.operations.backup.tempfile.TemporaryDirectory", wraps=factory) as create:
+                    with service_profile(parameters) as folder:
+                        self.assertTrue((folder / "service.conf").is_file())
+                        self.assertEqual((folder / "service.conf").stat().st_mode & 0o777, 0o600)
+                        self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+                    self.assertIsNone(create.call_args.kwargs["dir"])
+        self.assertFalse(folder.exists())
+
+    def test_service_profile_respects_explicit_tmpdir_and_cleans_up_after_error(self):
+        parameters = {
+            "host": "localhost", "port": 5432, "dbname": "test",
+            "user": "test", "password": "test-only", "sslmode": "disable",
+            "connect_timeout": 10,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"TMPDIR": directory}):
+                with self.assertRaisesRegex(RuntimeError, "probe"):
+                    with service_profile(parameters) as folder:
+                        self.assertEqual(folder.parent, Path(directory))
+                        raise RuntimeError("probe")
+            self.assertFalse(folder.exists())

@@ -6,7 +6,10 @@ Cria roles e tabelas permanentes exclusivamente nesse ambiente autorizado.
 """
 
 import os
+import json
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 import psycopg2
@@ -64,6 +67,7 @@ class TestPrivateAccess(unittest.TestCase):
         with cls.connection.cursor() as cursor:
             cursor.execute(cls.migration)
             cursor.execute((root / "004_measurement_timestamptz.sql").read_text())
+            cursor.execute((root / "005_historical_corrections.sql").read_text())
         cls.connection.commit()
 
     def setUp(self):
@@ -101,6 +105,70 @@ class TestPrivateAccess(unittest.TestCase):
                 ("ai_reader", False, False, False, False, False, False),
                 ("etl_writer", False, False, False, False, False, False),
             ])
+
+    def test_correction_audit_is_admin_only_and_migration_is_repeatable(self):
+        with self.connection.cursor() as cursor:
+            cursor.execute(Path("app/sql/migrations/005_historical_corrections.sql").read_text())
+        self.connection.commit()
+        for role in ("etl_writer", "ai_reader", "anon", "authenticated", "service_role"):
+            self.as_role(role)
+            for statement in (
+                "SELECT * FROM etl_private.etl_corrections",
+                "DELETE FROM etl_private.etl_corrections",
+            ):
+                self.denied(statement)
+            with self.connection.cursor() as cursor:
+                cursor.execute("RESET ROLE")
+            self.connection.commit()
+
+    def test_abrupt_process_exit_after_commits_then_new_process_resumes(self):
+        """Somente o cluster autorizado: os._exit não executa finally/close."""
+        code = """
+import json
+import os
+from unittest.mock import Mock
+from app.worker.etl_worker import ETLWorker
+from app.operations.rehearse import SnapshotSource
+worker = ETLWorker()
+worker.logger = Mock()
+worker.page_size = 2
+worker.firebase = SnapshotSource({
+    'sensores': {'T05_CRASH': {
+        '-' + f'{n:019d}': None if n == 2 else {
+            'hora': '2026-08-20 17:29:06', 'temperatura': n,
+        } for n in range(1, 5)
+    }}, 'boias': {},
+})
+if os.environ.get('T05_CRASH') == '1':
+    worker.checkpoints.set = lambda *args: os._exit(77)
+print(json.dumps(worker.process_sensors()))
+worker.database.close()
+"""
+        environment = dict(os.environ, T05_CRASH="1")
+        result = subprocess.run([sys.executable, "-c", code], env=environment,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 77, result.stderr)
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM sensor_data WHERE sensor_id='T05_CRASH'")
+            self.assertEqual(cursor.fetchone()[0], 1)
+            cursor.execute("SELECT count(*) FROM etl_rejections WHERE device_id='T05_CRASH'")
+            self.assertEqual(cursor.fetchone()[0], 1)
+            cursor.execute("SELECT last_key FROM etl_checkpoint WHERE device_id='T05_CRASH'")
+            self.assertIsNone(cursor.fetchone())
+        self.connection.commit()
+        environment["T05_CRASH"] = "0"
+        result = subprocess.run([sys.executable, "-c", code], env=environment,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [4, 2, 1, 1])
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM sensor_data WHERE sensor_id='T05_CRASH'")
+            self.assertEqual(cursor.fetchone()[0], 3)
+            cursor.execute("SELECT count(*) FROM etl_rejections WHERE device_id='T05_CRASH'")
+            self.assertEqual(cursor.fetchone()[0], 1)
+            cursor.execute("SELECT last_key FROM etl_checkpoint WHERE device_id='T05_CRASH'")
+            self.assertEqual(cursor.fetchone()[0], "-" + f"{4:019d}")
+        self.connection.commit()
 
     def test_moving_tables_preserves_data_indexes_and_removes_public_objects(self):
         with self.connection.cursor() as cursor:

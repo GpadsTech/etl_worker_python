@@ -8,6 +8,7 @@ from psycopg2 import DataError, IntegrityError, OperationalError
 from app.worker.etl_worker import ETLWorker
 from app.models.rejection import Rejection
 from app.database.connection import WorkerLockLostError
+from tests.legacy_paging import isolate_persistence
 
 
 class TestETLWorker(unittest.TestCase):
@@ -19,6 +20,7 @@ class TestETLWorker(unittest.TestCase):
         self.addCleanup(self.firebase_patch.stop)
         self.addCleanup(self.database_patch.stop)
         self.worker = ETLWorker()
+        isolate_persistence(self, self.worker)
         self.worker.logger = Mock()
         self.worker.checkpoints = Mock()
         self.worker.checkpoints.get.return_value = None

@@ -11,6 +11,17 @@ class RejectionRepository:
     def __init__(self, database: DatabaseConnection):
         self.database = database
 
+    def existing_ids(self, source, device_id, ids):
+        if not ids:
+            return set()
+        with self.database.connect().cursor() as cursor:
+            cursor.execute(
+                "SELECT firebase_id FROM etl_rejections "
+                "WHERE source=%s AND device_id=%s AND firebase_id=ANY(%s)",
+                (source, device_id, list(ids)),
+            )
+            return {row[0] for row in cursor.fetchall()}
+
     def save_many(self, rejections) -> None:
         """Commit de todas as rejeições ou rollback; replay não cria duplicatas."""
         rejections = list(rejections)

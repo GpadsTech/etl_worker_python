@@ -78,6 +78,8 @@ class Config:
         self.ETL_INTERVAL_SECONDS = int(
             os.getenv("ETL_INTERVAL_SECONDS") or 60
         )
+        self.ETL_PAGE_SIZE = self._integer("ETL_PAGE_SIZE", 500, 1, 10000)
+        self.ETL_LOOKBACK_RECORDS = self._integer("ETL_LOOKBACK_RECORDS", 1000, 0, 10000)
 
     def database_parameters(self) -> dict:
         """Valida configuração e monta parâmetros libpq sem registrar segredos."""
